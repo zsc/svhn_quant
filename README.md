@@ -175,3 +175,21 @@ pytest -q
 ```bash
 python sweep_bits.py --device mps --quant balanced --w_bits 8 4 2 --a_bits 8 4 2
 ```
+
+---
+
+## 10. 实验结果示例
+
+以下是在 Apple M4 Pro (MPS) 上运行 1 epoch 的实验结果（使用 `train + extra` 数据，`--quant balanced --equalize recursive_mean --scale_mode maxabs`）：
+
+| 配置 | Train acc | Val acc | Test acc | Train(s) | Val(s) | Epoch(s) | Test(s) | 输出目录 |
+|---|---:|---:|---:|---:|---:|---:|---:|---|
+| W8A8 | 0.9231 | 0.9696 | 0.9469 | 345.3 | 106.0 | 451.2 | 44.8 | `sweeps/2026-02-21_balanced_w8a8_e1` |
+| W4A8 | 0.9171 | 0.9686 | 0.9431 | 1121.9 | 84.3 | 1206.2 | 36.4 | `sweeps/2026-02-21_balanced_w4a8_e1` |
+| W4A4 | 0.9170 | 0.9670 | 0.9400 | 1185.7 | 83.0 | 1268.7 | 36.3 | `sweeps/2026-02-21_balanced_w4a4_e1` |
+| W2A4 | 0.1164 | 0.0831 | 0.0670 | 1201.6 | 13.5 | 1215.1 | 26.7 | `sweeps/2026-02-21_balanced_w2a4_e1` |
+| W2A4 (meanabs2.5) | 0.8981 | 0.9669 | 0.9409 | 1073.5 | 73.3 | 1146.8 | 33.4 | `sweeps/2026-02-21_balanced_w2a4_e1_meanabs2.5` |
+
+**说明**：
+- W8A8 / W4A8 / W4A4 在 1 epoch 即可达到 ~0.94+ 的 test acc
+- W2A4 在 `--scale_mode maxabs` 下出现失稳（test acc 接近随机），但切换到 `--scale_mode meanabs2.5` 后恢复到 ~0.94
