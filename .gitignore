@@ -1,0 +1,72 @@
+# Python
+__pycache__/
+bit-rnn
+*.py[cod]
+*$py.class
+*.so
+*.pt
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+.venv/
+ENV/
+env/
+
+# Testing
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+.hypothesis/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project specific
+# Data files (large)
+*.mat
+*.tar.gz
+
+# Checkpoints and logs
+checkpoints*/
+runs/
+logs/
+*.log
+
+# Tensorboard
+events.out.tfevents.*
+
+# Reference code
+_ref/
+
+# Metrics
+metrics.jsonl
+metrics.csv
