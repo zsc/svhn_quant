@@ -64,13 +64,23 @@
   - 更小学习率（例如 `--lr 0.001`）
   - 适当增加 epoch（低 bit 通常需要更多 epoch）
 
-## 7) 复现与实验管理
+## 7) ViT 的关键训练 recipe（≤10 epoch 也能很高）
+
+- ViT（`--model vit --vit_patch 8`）在 SVHN 上对训练 recipe 非常敏感：
+  - `SGD + lr=1e-3` 的 10-epoch test acc 只有 `~0.86`（W8A8）。
+  - 以为“不够训/加 dropout”能救：实测 `drop=0.1` 反而让 test acc 掉到 `~0.79`（W8A8），W2A4 也明显更差。
+- 影响最大的组合（实测能把 ViT 的 test acc 拉到 `~0.96+`）：
+  - `--optimizer adamw --lr 3e-4 --weight_decay 0.05 --grad_clip 1.0`
+  - `--vit_pool mean --vit_patch_norm`
+- AdamW 的 weight decay 分组也很关键：bias / norm / `pos_embed` / `cls_token` 建议 **不做** weight decay（这里已在 `train_svhn.py` 实现）。
+
+## 8) 复现与实验管理
 
 - **对齐设定**：对比不同 W/A bits 时，统一 seed、batch_size、val_split、优化器、scheduler、数据增强开关。
 - **记录命令/配置/时间**：把 config + 指标 + time 都落到 `metrics.jsonl`，再生成 report（表格最直观）。
 - **不要覆盖/删除输出目录**：每次实验写到独立 `output_dir`，便于回溯与复现（也避免误删）。
 
-## 8) 推荐的下一步（如果继续扩展）
+## 9) 推荐的下一步（如果继续扩展）
 
 - 把 `W2A4` 的稳定性做成 sweep：`lr × scale_mode × fp32_first_last × epochs`。
 - 做多次重复跑（至少 3 次）报告均值/方差，降低系统噪声对结论的影响。

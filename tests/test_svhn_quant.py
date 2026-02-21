@@ -6,6 +6,8 @@ import numpy as np
 import torch
 
 from datasets.svhn_mat import SVHNMatDataset, SVHNTransformConfig
+from models.svhn_cnn import QuantConfig
+from models.svhn_vit import SVHNViT
 from quantization.balanced import balanced_quantize_weight, equalize_k
 from quantization.ops import quantize_w_bitutils, round_half_away_from_zero, round_to_zero
 
@@ -79,3 +81,13 @@ def test_quantize_w_bitutils_discrete_and_backward() -> None:
     loss = wq.pow(2).mean()
     loss.backward()
     assert w.grad is not None
+
+
+def test_vit_forward_backward_smoke() -> None:
+    cfg = QuantConfig(quant="none", w_bits=32, a_bits=32)
+    model = SVHNViT(cfg, patch_size=8, embed_dim=64, depth=2, num_heads=4, mlp_ratio=2.0)
+    x = torch.randn(2, 3, 32, 32)
+    y = model(x)
+    assert y.shape == (2, 10)
+    y.mean().backward()
+    assert any(p.grad is not None for p in model.parameters() if p.requires_grad)

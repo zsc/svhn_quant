@@ -54,6 +54,14 @@ python train_svhn.py --device mps --quant none --w_bits 32 --a_bits 32 --data_di
 python train_svhn.py --device mps --quant balanced --w_bits 4 --a_bits 4 --data_dir .
 ```
 
+### 3.3 ViT（8x8 patch）
+
+默认把 32x32 图像切成 `8x8` patch（共 16 个 token）：
+
+```bash
+python train_svhn.py --device mps --model vit --quant balanced --w_bits 4 --a_bits 4 --data_dir .
+```
+
 关闭 extra：
 
 ```bash
@@ -128,6 +136,7 @@ python train_svhn.py --device mps --quant balanced --w_bits 4 --a_bits 4 --no_ex
 关键参数：
 
 - `--device {auto,mps,cuda,cpu}`：建议 `--device mps`（Apple Silicon）
+- `--model {cnn,vit}`：选择模型（默认 `cnn`）
 - `--use_extra / --no_extra`：是否把 `extra_32x32.mat` 拼进训练集（默认开启）
 - `--quant {none,balanced,uniform}`
 - `--w_bits {2,3,4,8,32}`：权重量化 bitwidth（32 表示不量化）
@@ -136,9 +145,27 @@ python train_svhn.py --device mps --quant balanced --w_bits 4 --a_bits 4 --no_ex
 - `--fp32_first_last`：首层 conv + 末层 fc 保持 FP32（低 bit 可作为稳定性选项）
 - `--no_tqdm`：关进度条，方便做 sweep/跑日志
 
+ViT 结构参数（仅 `--model vit` 生效）：
+
+- `--vit_patch`（默认 8）
+- `--vit_dim`（默认 192）
+- `--vit_depth`（默认 6）
+- `--vit_heads`（默认 3）
+- `--vit_mlp_ratio`（默认 4.0）
+- `--vit_patch_norm`：在 patch embedding 后加 LayerNorm（可作为稳定性/精度小技巧）
+- `--vit_pool {cls,mean}`：分类 pooling（默认 `cls`）
+- `--vit_drop`（默认 0.0）
+- `--vit_attn_drop`（默认 0.0）
+
 macOS 建议：
 
 - `--num_workers 0` 默认就是 0，避免 `spawn` 导致 `.mat` 大数组在 worker 间重复占内存。
+
+优化相关（可选 trick）：
+
+- `--optimizer {sgd,adamw}`：ViT 常用 `adamw`
+- `--grad_clip`：Transformer 常见的 grad-norm 裁剪
+- `--label_smoothing`
 
 ---
 
@@ -193,3 +220,21 @@ python sweep_bits.py --device mps --quant balanced --w_bits 8 4 2 --a_bits 8 4 2
 **说明**：
 - W8A8 / W4A8 / W4A4 在 1 epoch 即可达到 ~0.94+ 的 test acc
 - W2A4 在 `--scale_mode maxabs` 下出现失稳（test acc 接近随机），但切换到 `--scale_mode meanabs2.5` 后恢复到 ~0.94
+
+### 10.1 ViT（8x8 patch，≤10 epoch）
+
+ViT 默认把 `32x32` 切成 `8x8` patch（`4x4=16` 个 patch token，再加 `cls` token）。
+
+实测在 SVHN 上，ViT 更吃优化器/训练 recipe。下面这组设置在 ≤10 epoch 内就能把精度拉起来：
+
+```bash
+python train_svhn.py --device mps --model vit --quant balanced --w_bits 2 --a_bits 4 \
+  --optimizer adamw --lr 0.0003 --weight_decay 0.05 --grad_clip 1.0 \
+  --vit_pool mean --vit_patch_norm --epochs 10 --batch_size 256 --data_dir .
+```
+
+| 配置 | Epochs | Best Val acc | Test acc | 输出目录 |
+|---|---:|---:|---:|---|
+| W8A8 | 5 | 0.9772 | 0.9582 | `sweeps/2026-02-21_vit_balanced_w8a8_e5_extra_adamw_lr3e-4_wd0.05_clip1_poolmean_pnorm_v2` |
+| W2A4 | 10 | 0.9777 | 0.9607 | `sweeps/2026-02-21_vit_balanced_w2a4_e10_extra_adamw_lr3e-4_wd0.05_clip1_poolmean_pnorm` |
+| W2A4 (meanabs2.5) | 10 | 0.9823 | 0.9669 | `sweeps/2026-02-21_vit_balanced_w2a4_e10_extra_meanabs2.5_adamw_lr3e-4_wd0.05_clip1_poolmean_pnorm` |

@@ -63,3 +63,58 @@ python -u train_svhn.py --device mps --epochs 1 --quant balanced --w_bits 2 --a_
 
 - W8A8 / W4A8 / W4A4 在 1 epoch 就能达到 ~0.94+ 的 test acc（使用 `train+extra`）。
 - W2A4 在 `--scale_mode maxabs` 下出现明显失稳/坍塌（test acc 接近随机），但切换到 `--scale_mode meanabs2.5` 后恢复到 `~0.94` 的 test acc。
+
+---
+
+## ViT（8x8 patch）实验（≤10 epoch）
+
+模型：`--model vit`，默认 `--vit_patch 8`，把 `32x32` 切成 `4x4=16` 个 patch token（再加 `cls` token，总 token=17）。
+
+除特别说明外统一使用：
+
+- 数据：`train+extra`（默认启用）
+- `--device mps --quant balanced --equalize recursive_mean`
+- `--batch_size 256 --seed 42 --no_tqdm`
+- 结构：默认 ViT（`vit_dim=192, vit_depth=6, vit_heads=3`）
+
+### Baseline（SGD，drop=0）
+
+设定：
+
+- `--lr 0.001 --optimizer sgd --vit_drop 0 --vit_attn_drop 0`
+
+| 配置 | Epochs | Best Val acc | Test acc | 输出目录 |
+|---|---:|---:|---:|---|
+| W8A8 | 10 | 0.9120 | 0.8601 | `sweeps/2026-02-21_vit_balanced_w8a8_e10_extra_lr1e-3_drop0.0` |
+| W2A4 | 10 | 0.8768 | 0.8231 | `sweeps/2026-02-21_vit_balanced_w2a4_e10_extra_lr1e-3_drop0.0` |
+| W2A4 (meanabs2.5) | 10 | 0.8834 | 0.8324 | `sweeps/2026-02-21_vit_balanced_w2a4_e10_extra_meanabs2.5_lr1e-3_drop0.0` |
+
+### Dropout=0.1（SGD）——明显变差
+
+设定：
+
+- `--lr 0.001 --optimizer sgd --vit_drop 0.1 --vit_attn_drop 0.1`
+
+| 配置 | Epochs | Best Val acc | Test acc | 输出目录 |
+|---|---:|---:|---:|---|
+| W8A8 | 10 | 0.8479 | 0.7935 | `sweeps/2026-02-21_vit_balanced_w8a8_e10_extra_lr1e-3_drop0.1` |
+| W2A4 | 10 | 0.8154 | 0.7636 | `sweeps/2026-02-21_vit_balanced_w2a4_e10_extra_lr1e-3_drop0.1` |
+| W2A4 (meanabs2.5) | 10 | 0.8228 | 0.7711 | `sweeps/2026-02-21_vit_balanced_w2a4_e10_extra_meanabs2.5_lr1e-3_drop0.1` |
+
+### Trick：AdamW + mean pooling + patch-norm + grad clip（≤10 epoch 就能很高）
+
+设定（对 ViT 很关键）：
+
+- `--optimizer adamw --lr 0.0003 --weight_decay 0.05 --grad_clip 1.0`
+- `--vit_pool mean --vit_patch_norm`
+
+| 配置 | Epochs | Best Val acc | Test acc | 输出目录 |
+|---|---:|---:|---:|---|
+| W8A8 | 5 | 0.9772 | 0.9582 | `sweeps/2026-02-21_vit_balanced_w8a8_e5_extra_adamw_lr3e-4_wd0.05_clip1_poolmean_pnorm_v2` |
+| W2A4 | 10 | 0.9777 | 0.9607 | `sweeps/2026-02-21_vit_balanced_w2a4_e10_extra_adamw_lr3e-4_wd0.05_clip1_poolmean_pnorm` |
+| W2A4 (meanabs2.5) | 10 | 0.9823 | 0.9669 | `sweeps/2026-02-21_vit_balanced_w2a4_e10_extra_meanabs2.5_adamw_lr3e-4_wd0.05_clip1_poolmean_pnorm` |
+
+结论（ViT 部分）：
+
+- 单纯把 epoch 提高 + dropout，并不能解决精度低的问题；dropout 在这里反而明显变差。
+- 影响最大的“招”是：**AdamW + 合适的 weight decay + grad clip + mean pooling + patch-norm**，在 ≤10 epoch 内即可把 test acc 拉到 `~0.96+`。

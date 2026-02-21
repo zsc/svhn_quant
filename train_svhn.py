@@ -14,6 +14,7 @@ from tqdm import tqdm
 
 from datasets.svhn_mat import SVHNMatDataset, SVHNTransformConfig
 from models.svhn_cnn import QuantConfig, SVHNCNN
+from models.svhn_vit import SVHNViT
 from utils.checkpoint import load_checkpoint, save_checkpoint
 from utils.meter import AverageMeter, accuracy_top1
 from utils.seed import seed_everything
@@ -64,6 +65,7 @@ def _train_one_epoch(
     optimizer: torch.optim.Optimizer,
     device: torch.device,
     *,
+    grad_clip: float,
     pbar_desc: str,
     use_tqdm: bool,
 ) -> dict[str, float]:
@@ -80,6 +82,8 @@ def _train_one_epoch(
         logits = model(x)
         loss = criterion(logits, y)
         loss.backward()
+        if grad_clip > 0:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip)
         optimizer.step()
 
         acc = accuracy_top1(logits.detach(), y)
@@ -192,8 +196,9 @@ def _build_train_val(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Train SVHN CNN with Balanced Quantization (MPS-ready).")
+    parser = argparse.ArgumentParser(description="Train SVHN model (CNN/ViT) with Balanced Quantization (MPS-ready).")
     parser.add_argument("--data_dir", type=str, default=".", help="Directory containing *_32x32.mat")
+    parser.add_argument("--model", type=str, choices=["cnn", "vit"], default="cnn")
     parser.add_argument(
         "--use_extra",
         action="store_true",
@@ -228,9 +233,23 @@ def main() -> None:
     parser.add_argument("--scale_mode", type=str, choices=["maxabs", "meanabs2.5"], default="maxabs")
     parser.add_argument("--fp32_first_last", action="store_true")
 
+    # ViT arch (used when --model vit)
+    parser.add_argument("--vit_patch", type=int, default=8)
+    parser.add_argument("--vit_dim", type=int, default=192)
+    parser.add_argument("--vit_depth", type=int, default=6)
+    parser.add_argument("--vit_heads", type=int, default=3)
+    parser.add_argument("--vit_mlp_ratio", type=float, default=4.0)
+    parser.add_argument("--vit_patch_norm", action="store_true", help="Apply LayerNorm after patch embedding")
+    parser.add_argument("--vit_pool", type=str, choices=["cls", "mean"], default="cls", help="Pooling for classification")
+    parser.add_argument("--vit_drop", type=float, default=0.0)
+    parser.add_argument("--vit_attn_drop", type=float, default=0.0)
+
     # Optimization
+    parser.add_argument("--optimizer", type=str, choices=["sgd", "adamw"], default="sgd")
     parser.add_argument("--momentum", type=float, default=0.9)
     parser.add_argument("--weight_decay", type=float, default=5e-4)
+    parser.add_argument("--grad_clip", type=float, default=0.0, help="Clip grad norm if > 0 (useful for ViT)")
+    parser.add_argument("--label_smoothing", type=float, default=0.0)
     parser.add_argument("--scheduler", type=str, choices=["cosine", "step", "none"], default="cosine")
     parser.add_argument("--step_size", type=int, default=30)
     parser.add_argument("--gamma", type=float, default=0.1)
@@ -268,18 +287,62 @@ def main() -> None:
         scale_mode=args.scale_mode,
         fp32_first_last=bool(args.fp32_first_last),
     )
-    model = SVHNCNN(cfg).to(device)
+    if args.model == "cnn":
+        model = SVHNCNN(cfg)
+    elif args.model == "vit":
+        model = SVHNViT(
+            cfg,
+            patch_size=int(args.vit_patch),
+            embed_dim=int(args.vit_dim),
+            depth=int(args.vit_depth),
+            num_heads=int(args.vit_heads),
+            mlp_ratio=float(args.vit_mlp_ratio),
+            patch_norm=bool(args.vit_patch_norm),
+            pool=str(args.vit_pool),
+            drop=float(args.vit_drop),
+            attn_drop=float(args.vit_attn_drop),
+        )
+    else:
+        raise ValueError(f"Unknown --model {args.model!r}")
+
+    model = model.to(device)
+    print(f"Model: {args.model}")
     print("Model param device:", next(model.parameters()).device)
     if device.type == "mps":
         print(f"MPS allocated (after model.to): {torch.mps.current_allocated_memory() / 1024**2:.1f} MB")
 
-    criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.SGD(
-        model.parameters(),
-        lr=float(args.lr),
-        momentum=float(args.momentum),
-        weight_decay=float(args.weight_decay),
-    )
+    criterion = nn.CrossEntropyLoss(label_smoothing=float(args.label_smoothing))
+    if args.optimizer == "sgd":
+        optimizer = torch.optim.SGD(
+            model.parameters(),
+            lr=float(args.lr),
+            momentum=float(args.momentum),
+            weight_decay=float(args.weight_decay),
+        )
+    else:
+        decay: list[torch.Tensor] = []
+        no_decay: list[torch.Tensor] = []
+        for name, p in model.named_parameters():
+            if not p.requires_grad:
+                continue
+            if (
+                p.ndim == 1
+                or name.endswith(".bias")
+                or ".bn" in name
+                or ".norm" in name
+                or "pos_embed" in name
+                or "cls_token" in name
+            ):
+                no_decay.append(p)
+            else:
+                decay.append(p)
+        optimizer = torch.optim.AdamW(
+            [
+                {"params": decay, "weight_decay": float(args.weight_decay)},
+                {"params": no_decay, "weight_decay": 0.0},
+            ],
+            lr=float(args.lr),
+        )
 
     if args.scheduler == "cosine":
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=int(args.epochs))
@@ -296,6 +359,18 @@ def main() -> None:
         optimizer.load_state_dict(ckpt["optimizer"])
         start_epoch = int(ckpt.get("epoch", 0))
         best_val_acc = float(ckpt.get("best_val_acc", 0.0))
+        # `last.pt` previously stored a potentially stale `best_val_acc` (saved before
+        # updating best for that epoch). Prefer the value from `best.pt` if present.
+        best_path = os.path.join(args.output_dir, "best.pt")
+        if os.path.exists(best_path):
+            try:
+                best_ckpt = load_checkpoint(best_path, map_location=device)
+                best_val_acc = max(best_val_acc, float(best_ckpt.get("best_val_acc", 0.0)))
+            except Exception:
+                pass
+        # Make the LR scheduler continue from the resumed epoch index.
+        if scheduler is not None:
+            scheduler.last_epoch = start_epoch
 
     metrics_path = os.path.join(args.output_dir, "metrics.jsonl")
     with open(metrics_path, "a", encoding="utf-8") as mf:
@@ -309,6 +384,7 @@ def main() -> None:
                 criterion,
                 optimizer,
                 device,
+                grad_clip=float(args.grad_clip),
                 pbar_desc=f"epoch {epoch+1}/{args.epochs} [train]",
                 use_tqdm=not bool(args.no_tqdm),
             )
@@ -343,21 +419,11 @@ def main() -> None:
                 f"time train {t_train:.1f}s val {t_val:.1f}s epoch {t_epoch:.1f}s"
             )
 
-            last_path = os.path.join(args.output_dir, "last.pt")
-            save_checkpoint(
-                {
-                    "epoch": epoch + 1,
-                    "model": model.state_dict(),
-                    "optimizer": optimizer.state_dict(),
-                    "best_val_acc": best_val_acc,
-                    "args": vars(args),
-                    "config": asdict(cfg),
-                },
-                last_path,
-            )
-
-            if val_m["acc"] > best_val_acc:
+            is_best = bool(val_m["acc"] > best_val_acc)
+            if is_best:
                 best_val_acc = float(val_m["acc"])
+
+            if is_best:
                 best_path = os.path.join(args.output_dir, "best.pt")
                 save_checkpoint(
                     {
@@ -370,6 +436,19 @@ def main() -> None:
                     },
                     best_path,
                 )
+
+            last_path = os.path.join(args.output_dir, "last.pt")
+            save_checkpoint(
+                {
+                    "epoch": epoch + 1,
+                    "model": model.state_dict(),
+                    "optimizer": optimizer.state_dict(),
+                    "best_val_acc": best_val_acc,
+                    "args": vars(args),
+                    "config": asdict(cfg),
+                },
+                last_path,
+            )
 
     # Final test with best checkpoint.
     best_path = os.path.join(args.output_dir, "best.pt")
