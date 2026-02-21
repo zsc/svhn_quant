@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import time
 from dataclasses import asdict
 from typing import Any
 
@@ -31,6 +32,13 @@ def _select_device(device_arg: str) -> torch.device:
     if dev.type == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA requested but not available.")
     return dev
+
+
+def _sync_device(device: torch.device) -> None:
+    if device.type == "cuda":
+        torch.cuda.synchronize()
+    elif device.type == "mps":
+        torch.mps.synchronize()
 
 
 @torch.no_grad()
@@ -186,7 +194,18 @@ def _build_train_val(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train SVHN CNN with Balanced Quantization (MPS-ready).")
     parser.add_argument("--data_dir", type=str, default=".", help="Directory containing *_32x32.mat")
-    parser.add_argument("--use_extra", action="store_true", help="Include extra_32x32.mat in training")
+    parser.add_argument(
+        "--use_extra",
+        action="store_true",
+        default=True,
+        help="Include extra_32x32.mat in training (default: enabled)",
+    )
+    parser.add_argument(
+        "--no_extra",
+        action="store_false",
+        dest="use_extra",
+        help="Do not include extra_32x32.mat in training",
+    )
     parser.add_argument("--val_split", type=float, default=0.1)
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--batch_size", type=int, default=128)
@@ -282,6 +301,8 @@ def main() -> None:
     with open(metrics_path, "a", encoding="utf-8") as mf:
         for epoch in range(start_epoch, int(args.epochs)):
             lr = float(optimizer.param_groups[0]["lr"])
+            _sync_device(device)
+            t0 = time.perf_counter()
             train_m = _train_one_epoch(
                 model,
                 train_loader,
@@ -291,7 +312,16 @@ def main() -> None:
                 pbar_desc=f"epoch {epoch+1}/{args.epochs} [train]",
                 use_tqdm=not bool(args.no_tqdm),
             )
+            _sync_device(device)
+            t_train = time.perf_counter() - t0
+
+            _sync_device(device)
+            t0 = time.perf_counter()
             val_m = _evaluate(model, val_loader, criterion, device)
+            _sync_device(device)
+            t_val = time.perf_counter() - t0
+
+            t_epoch = t_train + t_val
             if scheduler is not None:
                 scheduler.step()
 
@@ -300,6 +330,7 @@ def main() -> None:
                 "lr": lr,
                 "train": train_m,
                 "val": val_m,
+                "time_sec": {"train": t_train, "val": t_val, "epoch": t_epoch},
                 "config": asdict(cfg),
             }
             mf.write(json.dumps(row) + "\n")
@@ -308,7 +339,8 @@ def main() -> None:
             print(
                 f"Epoch {epoch+1:03d} | lr {lr:.5f} | "
                 f"train loss {train_m['loss']:.4f} acc {train_m['acc']:.4f} | "
-                f"val loss {val_m['loss']:.4f} acc {val_m['acc']:.4f}"
+                f"val loss {val_m['loss']:.4f} acc {val_m['acc']:.4f} | "
+                f"time train {t_train:.1f}s val {t_val:.1f}s epoch {t_epoch:.1f}s"
             )
 
             last_path = os.path.join(args.output_dir, "last.pt")
@@ -345,10 +377,14 @@ def main() -> None:
         ckpt = load_checkpoint(best_path, map_location=device)
         model.load_state_dict(ckpt["model"])
 
+    _sync_device(device)
+    t0 = time.perf_counter()
     test_m = _evaluate(model, test_loader, criterion, device)
+    _sync_device(device)
+    t_test = time.perf_counter() - t0
     print(f"Test | loss {test_m['loss']:.4f} acc {test_m['acc']:.4f}")
     with open(metrics_path, "a", encoding="utf-8") as mf:
-        mf.write(json.dumps({"epoch": "test", "test": test_m}) + "\n")
+        mf.write(json.dumps({"epoch": "test", "test": test_m, "time_sec": {"test": t_test}}) + "\n")
 
 
 if __name__ == "__main__":

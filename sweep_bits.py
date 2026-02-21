@@ -55,7 +55,8 @@ def main() -> None:
     p.add_argument("--scale_mode", type=str, default="maxabs", choices=["maxabs", "meanabs2.5"])
     p.add_argument("--equalize", type=str, default="recursive_mean", choices=["recursive_mean"])
     p.add_argument("--fp32_first_last", action="store_true")
-    p.add_argument("--use_extra", action="store_true")
+    p.add_argument("--use_extra", action="store_true", default=True, help="Include extra_32x32.mat (default: enabled)")
+    p.add_argument("--no_extra", action="store_false", dest="use_extra", help="Do not include extra_32x32.mat")
 
     p.add_argument("--epochs_8", type=int, default=5, help="Epochs when min(w_bits,a_bits) >= 8")
     p.add_argument("--epochs_4", type=int, default=10, help="Epochs when min(w_bits,a_bits) == 4")
@@ -115,8 +116,8 @@ def main() -> None:
         ]
         if args.fp32_first_last:
             cmd.append("--fp32_first_last")
-        if args.use_extra:
-            cmd.append("--use_extra")
+        if not args.use_extra:
+            cmd.append("--no_extra")
 
         print(" ".join(cmd))
         if args.dry_run:
