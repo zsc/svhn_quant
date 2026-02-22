@@ -72,6 +72,11 @@
 - 影响最大的组合（实测能把 ViT 的 test acc 拉到 `~0.96+`）：
   - `--optimizer adamw --lr 3e-4 --weight_decay 0.05 --grad_clip 1.0`
   - `--vit_pool mean --vit_patch_norm`
+- 简单 ablation（W2A4 meanabs2.5，5 epochs）显示重要性排序大致是：
+  - `--vit_patch_norm`（最关键，去掉约 `-2.0%` test acc）
+  - `--grad_clip 1.0`（有帮助，去掉约 `-0.4%`）
+  - `--vit_pool mean`（小幅提升，换成 `cls` 约 `-0.2%`）
+  - `--weight_decay 0.05`（小幅提升，设成 0 约 `-0.2%`）
 - AdamW 的 weight decay 分组也很关键：bias / norm / `pos_embed` / `cls_token` 建议 **不做** weight decay（这里已在 `train_svhn.py` 实现）。
 
 ## 8) 复现与实验管理

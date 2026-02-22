@@ -114,6 +114,26 @@ python -u train_svhn.py --device mps --epochs 1 --quant balanced --w_bits 2 --a_
 | W2A4 | 10 | 0.9777 | 0.9607 | `sweeps/2026-02-21_vit_balanced_w2a4_e10_extra_adamw_lr3e-4_wd0.05_clip1_poolmean_pnorm` |
 | W2A4 (meanabs2.5) | 10 | 0.9823 | 0.9669 | `sweeps/2026-02-21_vit_balanced_w2a4_e10_extra_meanabs2.5_adamw_lr3e-4_wd0.05_clip1_poolmean_pnorm` |
 
+### Ablation：weight decay / grad clip / pooling / patch-norm（W2A4 meanabs2.5，5 epochs）
+
+固定设定：
+
+- `--optimizer adamw --lr 0.0003 --epochs 5`
+- `--w_bits 2 --a_bits 4 --scale_mode meanabs2.5`
+
+Baseline（full recipe）：
+
+- `--weight_decay 0.05 --grad_clip 1.0 --vit_pool mean --vit_patch_norm`
+
+| 变更（相对 baseline） | Best Val acc | Test acc | ΔTest | 输出目录 |
+|---|---:|---:|---:|---|
+| baseline（full） | 0.9740 | 0.9513 | +0.0000 | `sweeps/2026-02-21_vit_ablate_full_w2a4_meanabs2.5_adamw_e5` |
+| 去掉 weight decay（wd=0） | 0.9734 | 0.9493 | -0.0020 | `sweeps/2026-02-21_vit_ablate_wd0_w2a4_meanabs2.5_adamw_e5` |
+| 去掉 grad clip（clip=0） | 0.9708 | 0.9470 | -0.0043 | `sweeps/2026-02-21_vit_ablate_clip0_w2a4_meanabs2.5_adamw_e5` |
+| pooling 改成 cls（pool=cls） | 0.9723 | 0.9489 | -0.0023 | `sweeps/2026-02-21_vit_ablate_poolcls_w2a4_meanabs2.5_adamw_e5` |
+| 去掉 patch-norm（无 `--vit_patch_norm`） | 0.9561 | 0.9313 | -0.0200 | `sweeps/2026-02-21_vit_ablate_nopnorm_w2a4_meanabs2.5_adamw_e5` |
+| pool=cls + 无 patch-norm（交互） | 0.9582 | 0.9256 | -0.0257 | `sweeps/2026-02-21_vit_ablate_poolcls_nopnorm_w2a4_meanabs2.5_adamw_e5` |
+
 结论（ViT 部分）：
 
 - 单纯把 epoch 提高 + dropout，并不能解决精度低的问题；dropout 在这里反而明显变差。
