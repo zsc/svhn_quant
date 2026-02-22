@@ -218,9 +218,45 @@ python sweep_bits.py --device mps --quant balanced --w_bits 8 4 2 --a_bits 8 4 2
 
 ---
 
-## 10. 实验结果示例
+## 10. 实验结果
 
-以下是在 Apple M4 Pro (MPS) 上运行 1 epoch 的实验结果（使用 `train + extra` 数据，`--quant balanced --equalize recursive_mean --scale_mode maxabs`）：
+本节把目前跑过的核心实验结果集中整理（先列结果，再做总结），并尽量保证对齐可比。
+
+除特别说明外统一设定：
+
+- 设备：Apple M4 Pro（`--device mps`）
+- 量化：`--quant balanced --equalize recursive_mean`
+- 训练：`--batch_size 256 --seed 42 --val_split 0.1 --no_tqdm`
+- SVHN：默认用 `train+extra`（`--use_extra` 默认开启），增强仅 `RandomCrop(32,padding=4)`；不启用水平翻转
+- CIFAR-10/100：通过 `--dataset {cifar10,cifar100}`，增强为 `RandomCrop(32,padding=4)+RandomHorizontalFlip(0.5)`（`--hflip`）
+
+指标含义：
+
+- `Best Val acc`：训练过程中 val acc 的最大值
+- `Test acc`：训练结束后加载 `best.pt` 在 test 上评估
+
+### 10.1 ViT（8x8 patch，W2A4，≤10 epoch）结果一览
+
+统一：`--model vit --w_bits 2 --a_bits 4 --scale_mode meanabs2.5`
+
+| Dataset | Recipe | patch-norm | Optimizer | Epochs | Best Val acc | Test acc | 输出目录 |
+|---|---|---:|---|---:|---:|---:|---|
+| SVHN | wd+clip+mean-pool | ✅ | AdamW | 10 | 0.9823 | 0.9669 | `sweeps/2026-02-21_vit_balanced_w2a4_e10_extra_meanabs2.5_adamw_lr3e-4_wd0.05_clip1_poolmean_pnorm` |
+| CIFAR-10 | wd+clip+mean-pool | ✅ | AdamW | 10 | 0.5810 | 0.5560 | `sweeps/2026-02-22_cifar10_vit_bestrecipe_adamw_w2a4_meanabs2.5_e10` |
+| CIFAR-10 | wd+clip+mean-pool | ❌ | AdamW | 10 | 0.5892 | 0.5715 | `sweeps/2026-02-22_cifar10_vit_bestrecipe_adamw_w2a4_meanabs2.5_e10_nopnorm` |
+| CIFAR-10 | wd+clip+mean-pool | ❌ | Muon（2D）+ AdamW（其余） | 10 | 0.6318 | 0.6042 | `sweeps/2026-02-22_cifar10_vit_bestrecipe_muon_w2a4_meanabs2.5_e10_nopnorm_lr1e-3` |
+| CIFAR-100 | wd+clip+mean-pool | ✅ | AdamW | 10 | 0.2800 | 0.2764 | `sweeps/2026-02-22_cifar100_vit_bestrecipe_adamw_w2a4_meanabs2.5_e10` |
+| CIFAR-100 | wd+clip+mean-pool | ❌ | AdamW | 10 | 0.3076 | 0.2945 | `sweeps/2026-02-22_cifar100_vit_bestrecipe_adamw_w2a4_meanabs2.5_e10_nopnorm` |
+| CIFAR-100 | wd+clip+mean-pool | ❌ | Muon（2D）+ AdamW（其余） | 10 | 0.3252 | 0.3205 | `sweeps/2026-02-22_cifar100_vit_bestrecipe_muon_w2a4_meanabs2.5_e10_nopnorm_lr1e-3` |
+
+备注：
+
+- ViT 输入为 `32x32`，patch=`8`，因此 token 数为 `4x4 + 1(cls) = 17`。
+- `Muon` 在本仓库里按 PyTorch 限制做了参数拆分：仅 2D 参数用 `torch.optim.Muon`，其余参数用 AdamW（见 `train_svhn.py`）。
+
+### 10.2 CNN：1 epoch 低 bit 稳定性（SVHN）
+
+以下为 SVHN（`train+extra`）上 1 epoch 的 W/A bitwidth 与耗时（除最后一行外 `--scale_mode maxabs`）：
 
 | 配置 | Train acc | Val acc | Test acc | Train(s) | Val(s) | Epoch(s) | Test(s) | 输出目录 |
 |---|---:|---:|---:|---:|---:|---:|---:|---|
@@ -230,53 +266,68 @@ python sweep_bits.py --device mps --quant balanced --w_bits 8 4 2 --a_bits 8 4 2
 | W2A4 | 0.1164 | 0.0831 | 0.0670 | 1201.6 | 13.5 | 1215.1 | 26.7 | `sweeps/2026-02-21_balanced_w2a4_e1` |
 | W2A4 (meanabs2.5) | 0.8981 | 0.9669 | 0.9409 | 1073.5 | 73.3 | 1146.8 | 33.4 | `sweeps/2026-02-21_balanced_w2a4_e1_meanabs2.5` |
 
-**说明**：
-- W8A8 / W4A8 / W4A4 在 1 epoch 即可达到 ~0.94+ 的 test acc
-- W2A4 在 `--scale_mode maxabs` 下出现失稳（test acc 接近随机），但切换到 `--scale_mode meanabs2.5` 后恢复到 ~0.94
+### 10.3 `scale_mode`：W2A4 在 SVHN/CIFAR 的对照（CNN，1 epoch）
 
-### 10.1 ViT（8x8 patch，≤10 epoch）
+统一：`--model cnn --w_bits 2 --a_bits 4 --epochs 1`（其余同上）
 
-ViT 默认把 `32x32` 切成 `8x8` patch（`4x4=16` 个 patch token，再加 `cls` token）。
+| Dataset | scale=maxabs（Test acc） | scale=meanabs2.5（Test acc） | 输出目录（maxabs / meanabs2.5） |
+|---|---:|---:|---|
+| SVHN | 0.0670 | 0.9409 | `sweeps/2026-02-21_balanced_w2a4_e1` / `sweeps/2026-02-21_balanced_w2a4_e1_meanabs2.5` |
+| CIFAR-10 | 0.3862 | 0.4839 | `sweeps/2026-02-22_cifar10_cnn_w2a4_e1_maxabs` / `sweeps/2026-02-22_cifar10_cnn_w2a4_e1_meanabs2.5` |
+| CIFAR-100 | 0.0729 | 0.1323 | `sweeps/2026-02-22_cifar100_cnn_w2a4_e1_maxabs` / `sweeps/2026-02-22_cifar100_cnn_w2a4_e1_meanabs2.5` |
 
-实测在 SVHN 上，ViT 更吃优化器/训练 recipe。下面这组设置在 ≤10 epoch 内就能把精度拉起来：
+### 10.4 ViT：Ablation（W2A4 meanabs2.5）
 
-```bash
-python train_svhn.py --device mps --model vit --quant balanced --w_bits 2 --a_bits 4 \
-  --optimizer adamw --lr 0.0003 --weight_decay 0.05 --grad_clip 1.0 \
-  --vit_pool mean --vit_patch_norm --epochs 10 --batch_size 256 --data_dir .
-```
+#### 10.4.1 Dropout（SGD，10 epoch）
 
-同样支持 `--optimizer muon`（需要 PyTorch 提供 `torch.optim.Muon`），可用 `--momentum/--weight_decay` 调参。
+统一：`--model vit --optimizer sgd --lr 1e-3 --vit_pool cls`，仅比较 `--vit_drop/--vit_attn_drop`
 
-| 配置 | Epochs | Best Val acc | Test acc | 输出目录 |
+| Dataset | Drop | Best Val acc | Test acc | 输出目录 |
 |---|---:|---:|---:|---|
-| W8A8 | 5 | 0.9772 | 0.9582 | `sweeps/2026-02-21_vit_balanced_w8a8_e5_extra_adamw_lr3e-4_wd0.05_clip1_poolmean_pnorm_v2` |
-| W2A4 | 10 | 0.9777 | 0.9607 | `sweeps/2026-02-21_vit_balanced_w2a4_e10_extra_adamw_lr3e-4_wd0.05_clip1_poolmean_pnorm` |
-| W2A4 (meanabs2.5) | 10 | 0.9823 | 0.9669 | `sweeps/2026-02-21_vit_balanced_w2a4_e10_extra_meanabs2.5_adamw_lr3e-4_wd0.05_clip1_poolmean_pnorm` |
+| SVHN | 0.0 | 0.8834 | 0.8324 | `sweeps/2026-02-21_vit_balanced_w2a4_e10_extra_meanabs2.5_lr1e-3_drop0.0` |
+| SVHN | 0.1 | 0.8228 | 0.7711 | `sweeps/2026-02-21_vit_balanced_w2a4_e10_extra_meanabs2.5_lr1e-3_drop0.1` |
+| CIFAR-10 | 0.0 | 0.4238 | 0.4178 | `sweeps/2026-02-22_cifar10_vit_sgd_drop0_w2a4_meanabs2.5_e10` |
+| CIFAR-10 | 0.1 | 0.3562 | 0.3596 | `sweeps/2026-02-22_cifar10_vit_sgd_drop0.1_w2a4_meanabs2.5_e10` |
+| CIFAR-100 | 0.0 | 0.1494 | 0.1386 | `sweeps/2026-02-22_cifar100_vit_sgd_drop0_w2a4_meanabs2.5_e10` |
+| CIFAR-100 | 0.1 | 0.1116 | 0.1068 | `sweeps/2026-02-22_cifar100_vit_sgd_drop0.1_w2a4_meanabs2.5_e10` |
 
-### 10.2 CIFAR-10/100 复核结论（含 Muon）
+#### 10.4.2 patch-norm 的方向在 SVHN vs CIFAR 相反（AdamW，5 epoch）
 
-一键复现实验：
+统一：`--model vit --optimizer adamw --lr 3e-4 --epochs 5 --weight_decay 0.05 --grad_clip 1.0 --vit_pool mean`，对比是否开启 `--vit_patch_norm`
 
-```bash
-python validate_cifar.py --dataset cifar10 --jobs 3
-python validate_cifar.py --dataset cifar100 --jobs 3
-```
+| Dataset | 配置 | Best Val acc | Test acc | 输出目录 |
+|---|---|---:|---:|---|
+| SVHN | full（含 patch-norm） | 0.9740 | 0.9513 | `sweeps/2026-02-21_vit_ablate_full_w2a4_meanabs2.5_adamw_e5` |
+| SVHN | no patch-norm | 0.9561 | 0.9313 | `sweeps/2026-02-21_vit_ablate_nopnorm_w2a4_meanabs2.5_adamw_e5` |
+| CIFAR-10 | full（含 patch-norm） | 0.4966 | 0.4802 | `sweeps/2026-02-22_cifar10_vit_ablate_full_w2a4_meanabs2.5_adamw_e5` |
+| CIFAR-10 | no patch-norm | 0.5082 | 0.4999 | `sweeps/2026-02-22_cifar10_vit_ablate_nopnorm_w2a4_meanabs2.5_adamw_e5` |
+| CIFAR-100 | full（含 patch-norm） | 0.1920 | 0.1910 | `sweeps/2026-02-22_cifar100_vit_ablate_full_w2a4_meanabs2.5_adamw_e5` |
+| CIFAR-100 | no patch-norm | 0.2168 | 0.2136 | `sweeps/2026-02-22_cifar100_vit_ablate_nopnorm_w2a4_meanabs2.5_adamw_e5` |
 
-对应报告文件（包含全部表格与输出目录）：
+#### 10.4.3 Optimizer ablation（patch-norm-only，10 epoch）
 
-- `report_cifar_cifar10.md`
-- `report_cifar_cifar100.md`
+为了尽量把变量收敛到 “优化器本身”，这里用最小设定：
 
-核心结论（对齐设定下）：
+- `--vit_pool cls --vit_patch_norm`
+- `--weight_decay 0 --grad_clip 0`
+- AdamW lr=3e-4；SGD lr=1e-3；Muon lr=1e-3, momentum=0.95
 
-- `--scale_mode meanabs2.5` 在低 bit（W2A4）下依然更稳/更好（CIFAR 上通常体现为精度差距，而不一定像 SVHN 那样直接坍塌）。
-- Dropout(0.1) 依然明显变差：CIFAR-10 `0.4178 -> 0.3596`，CIFAR-100 `0.1386 -> 0.1068`（均为 test acc）。
-- ViT 上 optimizer 依然是主导因素（patch-norm-only 对照，10 epochs，test acc）：
+| Dataset | Optimizer | Best Val acc | Test acc | 输出目录 |
+|---|---|---:|---:|---|
+| SVHN | AdamW | 0.9798 | 0.9629 | `sweeps/2026-02-22_vit_verify_patchnorm_only_adamw_w2a4_meanabs2.5_e10_v2` |
+| SVHN | SGD | 0.8998 | 0.8549 | `sweeps/2026-02-22_vit_verify_patchnorm_only_sgd_w2a4_meanabs2.5_e10` |
+| SVHN | Muon（2D）+ AdamW（其余） | 0.9820 | 0.9664 | `sweeps/2026-02-22_vit_patchnorm_only_muon_w2a4_meanabs2.5_e10` |
+| CIFAR-10 | AdamW | 0.5596 | 0.5428 | `sweeps/2026-02-22_cifar10_vit_patchnorm_only_adamw_w2a4_meanabs2.5_e10` |
+| CIFAR-10 | SGD | 0.4150 | 0.4149 | `sweeps/2026-02-22_cifar10_vit_patchnorm_only_sgd_w2a4_meanabs2.5_e10` |
+| CIFAR-10 | Muon（2D）+ AdamW（其余） | 0.5982 | 0.5777 | `sweeps/2026-02-22_cifar10_vit_patchnorm_only_muon_w2a4_meanabs2.5_e10` |
+| CIFAR-100 | AdamW | 0.2824 | 0.2747 | `sweeps/2026-02-22_cifar100_vit_patchnorm_only_adamw_w2a4_meanabs2.5_e10` |
+| CIFAR-100 | SGD | 0.1300 | 0.1252 | `sweeps/2026-02-22_cifar100_vit_patchnorm_only_sgd_w2a4_meanabs2.5_e10` |
+| CIFAR-100 | Muon（2D）+ AdamW（其余） | 0.3024 | 0.2993 | `sweeps/2026-02-22_cifar100_vit_patchnorm_only_muon_w2a4_meanabs2.5_e10` |
 
-| Dataset | AdamW | SGD | Muon（2D）+ AdamW（其余） |
-|---|---:|---:|---:|
-| CIFAR-10 | 0.5428 | 0.4149 | **0.5777** |
-| CIFAR-100 | 0.2747 | 0.1252 | **0.2993** |
+### 10.5 总结
 
-- `--vit_patch_norm` 在 SVHN 上是强正向 trick，但在本轮 CIFAR-10/100 的 ablation 里 **去掉 patch-norm 反而更好**（说明该 trick 存在任务/设定耦合，不应作为“必开”）。
+- `scale_mode=maxabs` 在低 bit（尤其 W2A4）上风险很高；`meanabs2.5` 更稳（SVHN 上能从接近随机恢复到 `~0.94` test acc）。
+- ViT 在 ≤10 epoch 内的瓶颈主要不是 “多训一点/加 dropout”，而是优化器与 recipe：AdamW（或 Muon）明显强于 SGD；dropout(0.1) 在 SVHN/CIFAR-10/CIFAR-100 上都显著变差。
+- `--vit_patch_norm` 不是通用必开：SVHN 正向，但 CIFAR-10/100 反向（5 epoch 与 10 epoch 均复核）。
+- Muon 在 CIFAR-10/100 上收益稳定（同设定 10 epoch 下优于 AdamW/SGD）；SVHN 的 patch-norm-only 对照里也能略优于 AdamW。
+- 这些 CIFAR 指标主要用于验证“相对结论”（≤10 epoch + 小 ViT + 低 bit），不代表 SOTA；若追求绝对精度需更久训练与更大模型/更强增强。
