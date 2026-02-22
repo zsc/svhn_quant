@@ -237,7 +237,7 @@ python sweep_bits.py --device mps --quant balanced --w_bits 8 4 2 --a_bits 8 4 2
 
 ### 10.1 ViT（8x8 patch，W2A4，≤10 epoch）结果一览
 
-统一：`--model vit --w_bits 2 --a_bits 4 --scale_mode meanabs2.5`
+统一：`--model vit --w_bits 2 --a_bits 4`（除特别说明外使用 `--scale_mode meanabs2.5` 以便跨数据集对齐）
 
 | Dataset | Recipe | patch-norm | Optimizer | Epochs | Best Val acc | Test acc | 输出目录 |
 |---|---|---:|---|---:|---:|---:|---|
@@ -253,6 +253,7 @@ python sweep_bits.py --device mps --quant balanced --w_bits 8 4 2 --a_bits 8 4 2
 
 - ViT 输入为 `32x32`，patch=`8`，因此 token 数为 `4x4 + 1(cls) = 17`。
 - `Muon` 在本仓库里按 PyTorch 限制做了参数拆分：仅 2D 参数用 `torch.optim.Muon`，其余参数用 AdamW（见 `train_svhn.py`）。
+- **ViT 并不“必须”使用 `meanabs2.5`**：在 SVHN 上同一套 best recipe 用论文默认的 `--scale_mode maxabs` 也能正常收敛到 `Test acc=0.9607`（`sweeps/2026-02-21_vit_balanced_w2a4_e10_extra_adamw_lr3e-4_wd0.05_clip1_poolmean_pnorm`），但 `meanabs2.5` 仍有小幅提升到 `0.9669`。
 
 ### 10.2 CNN：1 epoch 低 bit 稳定性（SVHN）
 
@@ -326,7 +327,8 @@ python sweep_bits.py --device mps --quant balanced --w_bits 8 4 2 --a_bits 8 4 2
 
 ### 10.5 总结
 
-- `scale_mode=maxabs` 在低 bit（尤其 W2A4）上风险很高；`meanabs2.5` 更稳（SVHN 上能从接近随机恢复到 `~0.94` test acc）。
+- **CNN（W2A4）**：`scale_mode=maxabs` 风险很高（SVHN 上会坍塌到接近随机），`meanabs2.5` 更稳且跨数据集更一致。
+- **ViT（W2A4）**：在 SVHN 上 `maxabs` 也能正常训练，但 `meanabs2.5` 仍有小幅优势；CIFAR 上目前统一用 `meanabs2.5` 做对齐对照，尚未系统验证 ViT+`maxabs`。
 - ViT 在 ≤10 epoch 内的瓶颈主要不是 “多训一点/加 dropout”，而是优化器与 recipe：AdamW（或 Muon）明显强于 SGD；dropout(0.1) 在 SVHN/CIFAR-10/CIFAR-100 上都显著变差。
 - `--vit_patch_norm` 不是通用必开：SVHN 正向，但 CIFAR-10/100 反向（5 epoch 与 10 epoch 均复核）。
 - Muon 在 CIFAR-10/100 上收益稳定（同设定 10 epoch 下优于 AdamW/SGD）；SVHN 的 patch-norm-only 对照里也能略优于 AdamW。
