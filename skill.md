@@ -77,6 +77,8 @@
   - `--grad_clip 1.0`（有帮助，去掉约 `-0.4%`）
   - `--vit_pool mean`（小幅提升，换成 `cls` 约 `-0.2%`）
   - `--weight_decay 0.05`（小幅提升，设成 0 约 `-0.2%`）
+- AdamW vs SGD（同样只开 `--vit_patch_norm`，10 epochs）差距非常大：AdamW test `~0.963`，SGD test `~0.855`。这说明在本设置下 **AdamW 本身也是关键因素**。
+- “只开 patch-norm” 是否足够：AdamW + patch-norm-only 的 10-epoch test `~0.963`，距离最佳 recipe（`~0.967`）只差 `~0.4%`，但仍略落后；mean pooling / grad clip / 合适的 weight decay 贡献的是最后这点增益。
 - AdamW 的 weight decay 分组也很关键：bias / norm / `pos_embed` / `cls_token` 建议 **不做** weight decay（这里已在 `train_svhn.py` 实现）。
 
 ## 8) 复现与实验管理

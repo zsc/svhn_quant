@@ -134,6 +134,27 @@ Baseline（full recipe）：
 | 去掉 patch-norm（无 `--vit_patch_norm`） | 0.9561 | 0.9313 | -0.0200 | `sweeps/2026-02-21_vit_ablate_nopnorm_w2a4_meanabs2.5_adamw_e5` |
 | pool=cls + 无 patch-norm（交互） | 0.9582 | 0.9256 | -0.0257 | `sweeps/2026-02-21_vit_ablate_poolcls_nopnorm_w2a4_meanabs2.5_adamw_e5` |
 
+### Ablation：AdamW vs SGD（W2A4 meanabs2.5，10 epochs）
+
+为了尽量把变量收敛到 “优化器本身”，这里用同一组设定做 patch-norm-only 的 optimizer ablation：
+
+- 只开 `--vit_patch_norm`
+- 其它保持关闭：`--vit_pool cls`（不做 mean pooling），`--grad_clip 0`
+
+| Optimizer | Epochs | Best Val acc | Test acc | 输出目录 |
+|---|---:|---:|---:|---|
+| AdamW | 10 | 0.9798 | 0.9629 | `sweeps/2026-02-22_vit_verify_patchnorm_only_adamw_w2a4_meanabs2.5_e10_v2` |
+| SGD | 10 | 0.8998 | 0.8549 | `sweeps/2026-02-22_vit_verify_patchnorm_only_sgd_w2a4_meanabs2.5_e10` |
+
+### 验证：只开 patch-norm（10 epochs）能否 match 最佳结果？
+
+对比 “最佳 recipe（AdamW + wd/clip/meanpool/patch-norm）”：
+
+| 配置 | Epochs | Best Val acc | Test acc | ΔTest vs best | 输出目录 |
+|---|---:|---:|---:|---:|---|
+| best recipe（prev） | 10 | 0.9823 | 0.9669 | +0.0000 | `sweeps/2026-02-21_vit_balanced_w2a4_e10_extra_meanabs2.5_adamw_lr3e-4_wd0.05_clip1_poolmean_pnorm` |
+| patch-norm only（AdamW） | 10 | 0.9798 | 0.9629 | -0.0040 | `sweeps/2026-02-22_vit_verify_patchnorm_only_adamw_w2a4_meanabs2.5_e10_v2` |
+
 结论（ViT 部分）：
 
 - 单纯把 epoch 提高 + dropout，并不能解决精度低的问题；dropout 在这里反而明显变差。
