@@ -253,3 +253,30 @@ python train_svhn.py --device mps --model vit --quant balanced --w_bits 2 --a_bi
 | W8A8 | 5 | 0.9772 | 0.9582 | `sweeps/2026-02-21_vit_balanced_w8a8_e5_extra_adamw_lr3e-4_wd0.05_clip1_poolmean_pnorm_v2` |
 | W2A4 | 10 | 0.9777 | 0.9607 | `sweeps/2026-02-21_vit_balanced_w2a4_e10_extra_adamw_lr3e-4_wd0.05_clip1_poolmean_pnorm` |
 | W2A4 (meanabs2.5) | 10 | 0.9823 | 0.9669 | `sweeps/2026-02-21_vit_balanced_w2a4_e10_extra_meanabs2.5_adamw_lr3e-4_wd0.05_clip1_poolmean_pnorm` |
+
+### 10.2 CIFAR-10/100 复核结论（含 Muon）
+
+一键复现实验：
+
+```bash
+python validate_cifar.py --dataset cifar10 --jobs 3
+python validate_cifar.py --dataset cifar100 --jobs 3
+```
+
+对应报告文件（包含全部表格与输出目录）：
+
+- `report_cifar_cifar10.md`
+- `report_cifar_cifar100.md`
+
+核心结论（对齐设定下）：
+
+- `--scale_mode meanabs2.5` 在低 bit（W2A4）下依然更稳/更好（CIFAR 上通常体现为精度差距，而不一定像 SVHN 那样直接坍塌）。
+- Dropout(0.1) 依然明显变差：CIFAR-10 `0.4178 -> 0.3596`，CIFAR-100 `0.1386 -> 0.1068`（均为 test acc）。
+- ViT 上 optimizer 依然是主导因素（patch-norm-only 对照，10 epochs，test acc）：
+
+| Dataset | AdamW | SGD | Muon（2D）+ AdamW（其余） |
+|---|---:|---:|---:|
+| CIFAR-10 | 0.5428 | 0.4149 | **0.5777** |
+| CIFAR-100 | 0.2747 | 0.1252 | **0.2993** |
+
+- `--vit_patch_norm` 在 SVHN 上是强正向 trick，但在本轮 CIFAR-10/100 的 ablation 里 **去掉 patch-norm 反而更好**（说明该 trick 存在任务/设定耦合，不应作为“必开”）。
