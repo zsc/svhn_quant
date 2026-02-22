@@ -62,7 +62,7 @@ def _train_one_epoch(
     model: nn.Module,
     loader: DataLoader,
     criterion: nn.Module,
-    optimizer: torch.optim.Optimizer,
+    optimizers: list[torch.optim.Optimizer],
     device: torch.device,
     *,
     grad_clip: float,
@@ -78,13 +78,15 @@ def _train_one_epoch(
         x = x.to(device)
         y = y.to(device)
 
-        optimizer.zero_grad(set_to_none=True)
+        for opt in optimizers:
+            opt.zero_grad(set_to_none=True)
         logits = model(x)
         loss = criterion(logits, y)
         loss.backward()
         if grad_clip > 0:
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip)
-        optimizer.step()
+        for opt in optimizers:
+            opt.step()
 
         acc = accuracy_top1(logits.detach(), y)
         loss_meter.update(loss.item(), n=x.size(0))
@@ -98,77 +100,111 @@ def _train_one_epoch(
 def _build_train_val(
     args: argparse.Namespace,
 ) -> tuple[DataLoader, DataLoader, DataLoader]:
-    eval_tf = SVHNTransformConfig(
-        normalize=True,
-        random_crop=False,
-        horizontal_flip=False,
-    )
-    train_tf = SVHNTransformConfig(
-        normalize=True,
-        random_crop=not args.no_augment,
-        crop_padding=int(args.crop_padding),
-        horizontal_flip=bool(args.hflip),
-        hflip_p=float(args.hflip_p),
-    )
+    if args.dataset == "svhn":
+        eval_tf = SVHNTransformConfig(
+            normalize=True,
+            random_crop=False,
+            horizontal_flip=False,
+        )
+        train_tf = SVHNTransformConfig(
+            normalize=True,
+            random_crop=not args.no_augment,
+            crop_padding=int(args.crop_padding),
+            horizontal_flip=bool(args.hflip),
+            hflip_p=float(args.hflip_p),
+        )
 
-    # Load arrays once, then create two "views" (train with aug, val without aug)
-    # to avoid duplicating big numpy buffers (especially important when --use_extra).
-    train_base = SVHNMatDataset(args.data_dir, "train", transform=eval_tf, train=False)
-    train_aug = SVHNMatDataset(
-        args.data_dir,
-        "train",
-        images=train_base.images,
-        labels=train_base.labels,
-        transform=train_tf,
-        train=True,
-    )
-    train_noaug = SVHNMatDataset(
-        args.data_dir,
-        "train",
-        images=train_base.images,
-        labels=train_base.labels,
-        transform=eval_tf,
-        train=False,
-    )
-
-    parts_aug: list[SVHNMatDataset] = [train_aug]
-    parts_noaug: list[SVHNMatDataset] = [train_noaug]
-
-    if args.use_extra:
-        extra_base = SVHNMatDataset(args.data_dir, "extra", transform=eval_tf, train=False)
-        extra_aug = SVHNMatDataset(
+        # Load arrays once, then create two "views" (train with aug, val without aug)
+        # to avoid duplicating big numpy buffers (especially important when --use_extra).
+        train_base = SVHNMatDataset(args.data_dir, "train", transform=eval_tf, train=False)
+        train_aug = SVHNMatDataset(
             args.data_dir,
-            "extra",
-            images=extra_base.images,
-            labels=extra_base.labels,
+            "train",
+            images=train_base.images,
+            labels=train_base.labels,
             transform=train_tf,
             train=True,
         )
-        extra_noaug = SVHNMatDataset(
+        train_noaug = SVHNMatDataset(
             args.data_dir,
-            "extra",
-            images=extra_base.images,
-            labels=extra_base.labels,
+            "train",
+            images=train_base.images,
+            labels=train_base.labels,
             transform=eval_tf,
             train=False,
         )
-        parts_aug.append(extra_aug)
-        parts_noaug.append(extra_noaug)
 
-    full_aug = ConcatDataset(parts_aug)
-    full_noaug = ConcatDataset(parts_noaug)
+        parts_aug: list[torch.utils.data.Dataset[tuple[torch.Tensor, int]]] = [train_aug]
+        parts_noaug: list[torch.utils.data.Dataset[tuple[torch.Tensor, int]]] = [train_noaug]
 
-    n = len(full_aug)
-    val_size = int(round(n * float(args.val_split)))
-    val_size = max(1, min(val_size, n - 1))
-    gen = torch.Generator().manual_seed(int(args.seed))
-    perm = torch.randperm(n, generator=gen).tolist()
-    val_idx = perm[:val_size]
-    train_idx = perm[val_size:]
+        if args.use_extra:
+            extra_base = SVHNMatDataset(args.data_dir, "extra", transform=eval_tf, train=False)
+            extra_aug = SVHNMatDataset(
+                args.data_dir,
+                "extra",
+                images=extra_base.images,
+                labels=extra_base.labels,
+                transform=train_tf,
+                train=True,
+            )
+            extra_noaug = SVHNMatDataset(
+                args.data_dir,
+                "extra",
+                images=extra_base.images,
+                labels=extra_base.labels,
+                transform=eval_tf,
+                train=False,
+            )
+            parts_aug.append(extra_aug)
+            parts_noaug.append(extra_noaug)
 
-    train_ds = Subset(full_aug, train_idx)
-    val_ds = Subset(full_noaug, val_idx)
-    test_ds = SVHNMatDataset(args.data_dir, "test", transform=eval_tf, train=False)
+        full_aug = ConcatDataset(parts_aug)
+        full_noaug = ConcatDataset(parts_noaug)
+
+        n = len(full_aug)
+        val_size = int(round(n * float(args.val_split)))
+        val_size = max(1, min(val_size, n - 1))
+        gen = torch.Generator().manual_seed(int(args.seed))
+        perm = torch.randperm(n, generator=gen).tolist()
+        val_idx = perm[:val_size]
+        train_idx = perm[val_size:]
+
+        train_ds = Subset(full_aug, train_idx)
+        val_ds = Subset(full_noaug, val_idx)
+        test_ds = SVHNMatDataset(args.data_dir, "test", transform=eval_tf, train=False)
+    elif args.dataset in {"cifar10", "cifar100"}:
+        from torchvision import transforms as T
+        from torchvision.datasets import CIFAR10, CIFAR100
+
+        mean = (0.4914, 0.4822, 0.4465)
+        std = (0.2023, 0.1994, 0.2010)
+        eval_tf = T.Compose([T.ToTensor(), T.Normalize(mean, std)])
+
+        train_ops: list[torch.nn.Module] = []
+        if not bool(args.no_augment):
+            train_ops.append(T.RandomCrop(32, padding=int(args.crop_padding)))
+        if bool(args.hflip):
+            train_ops.append(T.RandomHorizontalFlip(p=float(args.hflip_p)))
+        train_ops += [T.ToTensor(), T.Normalize(mean, std)]
+        train_tf = T.Compose(train_ops)
+
+        ds_cls = CIFAR10 if args.dataset == "cifar10" else CIFAR100
+        full_aug = ds_cls(root=args.data_dir, train=True, download=True, transform=train_tf)
+        full_noaug = ds_cls(root=args.data_dir, train=True, download=True, transform=eval_tf)
+
+        n = len(full_aug)
+        val_size = int(round(n * float(args.val_split)))
+        val_size = max(1, min(val_size, n - 1))
+        gen = torch.Generator().manual_seed(int(args.seed))
+        perm = torch.randperm(n, generator=gen).tolist()
+        val_idx = perm[:val_size]
+        train_idx = perm[val_size:]
+
+        train_ds = Subset(full_aug, train_idx)
+        val_ds = Subset(full_noaug, val_idx)
+        test_ds = ds_cls(root=args.data_dir, train=False, download=True, transform=eval_tf)
+    else:
+        raise ValueError(f"Unknown dataset {args.dataset!r}")
 
     train_loader = DataLoader(
         train_ds,
@@ -198,6 +234,7 @@ def _build_train_val(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train SVHN model (CNN/ViT) with Balanced Quantization (MPS-ready).")
     parser.add_argument("--data_dir", type=str, default=".", help="Directory containing *_32x32.mat")
+    parser.add_argument("--dataset", type=str, choices=["svhn", "cifar10", "cifar100"], default="svhn")
     parser.add_argument("--model", type=str, choices=["cnn", "vit"], default="cnn")
     parser.add_argument(
         "--use_extra",
@@ -245,7 +282,7 @@ def main() -> None:
     parser.add_argument("--vit_attn_drop", type=float, default=0.0)
 
     # Optimization
-    parser.add_argument("--optimizer", type=str, choices=["sgd", "adamw"], default="sgd")
+    parser.add_argument("--optimizer", type=str, choices=["sgd", "adamw", "muon"], default="sgd")
     parser.add_argument("--momentum", type=float, default=0.9)
     parser.add_argument("--weight_decay", type=float, default=5e-4)
     parser.add_argument("--grad_clip", type=float, default=0.0, help="Clip grad norm if > 0 (useful for ViT)")
@@ -275,8 +312,9 @@ def main() -> None:
 
     train_loader, val_loader, test_loader = _build_train_val(args)
     print(
-        f"Data: train {len(train_loader.dataset)} | val {len(val_loader.dataset)} | test {len(test_loader.dataset)}"
-        f" | use_extra {bool(args.use_extra)}"
+        f"Data({args.dataset}): train {len(train_loader.dataset)} | val {len(val_loader.dataset)}"
+        f" | test {len(test_loader.dataset)}"
+        f"{' | use_extra ' + str(bool(args.use_extra)) if args.dataset == 'svhn' else ''}"
     )
 
     cfg = QuantConfig(
@@ -287,8 +325,9 @@ def main() -> None:
         scale_mode=args.scale_mode,
         fp32_first_last=bool(args.fp32_first_last),
     )
+    num_classes = 10 if args.dataset in {"svhn", "cifar10"} else 100
     if args.model == "cnn":
-        model = SVHNCNN(cfg)
+        model = SVHNCNN(cfg, num_classes=num_classes)
     elif args.model == "vit":
         model = SVHNViT(
             cfg,
@@ -301,6 +340,7 @@ def main() -> None:
             pool=str(args.vit_pool),
             drop=float(args.vit_drop),
             attn_drop=float(args.vit_attn_drop),
+            num_classes=num_classes,
         )
     else:
         raise ValueError(f"Unknown --model {args.model!r}")
@@ -312,14 +352,17 @@ def main() -> None:
         print(f"MPS allocated (after model.to): {torch.mps.current_allocated_memory() / 1024**2:.1f} MB")
 
     criterion = nn.CrossEntropyLoss(label_smoothing=float(args.label_smoothing))
+    optimizers: list[torch.optim.Optimizer]
     if args.optimizer == "sgd":
-        optimizer = torch.optim.SGD(
-            model.parameters(),
-            lr=float(args.lr),
-            momentum=float(args.momentum),
-            weight_decay=float(args.weight_decay),
-        )
-    else:
+        optimizers = [
+            torch.optim.SGD(
+                model.parameters(),
+                lr=float(args.lr),
+                momentum=float(args.momentum),
+                weight_decay=float(args.weight_decay),
+            )
+        ]
+    elif args.optimizer == "adamw":
         decay: list[torch.Tensor] = []
         no_decay: list[torch.Tensor] = []
         for name, p in model.named_parameters():
@@ -336,27 +379,95 @@ def main() -> None:
                 no_decay.append(p)
             else:
                 decay.append(p)
-        optimizer = torch.optim.AdamW(
+        optimizers = [
+            torch.optim.AdamW(
+                [
+                    {"params": decay, "weight_decay": float(args.weight_decay)},
+                    {"params": no_decay, "weight_decay": 0.0},
+                ],
+                lr=float(args.lr),
+            )
+        ]
+    elif args.optimizer == "muon":
+        if not hasattr(torch.optim, "Muon"):
+            raise RuntimeError("torch.optim.Muon is not available in this PyTorch build.")
+
+        muon_2d: list[torch.Tensor] = []
+        aux_decay: list[torch.Tensor] = []
+        aux_no_decay: list[torch.Tensor] = []
+        for name, p in model.named_parameters():
+            if not p.requires_grad:
+                continue
+            if p.ndim == 2:
+                muon_2d.append(p)
+                continue
+            if (
+                p.ndim == 1
+                or name.endswith(".bias")
+                or ".bn" in name
+                or ".norm" in name
+                or "pos_embed" in name
+                or "cls_token" in name
+            ):
+                aux_no_decay.append(p)
+            else:
+                aux_decay.append(p)
+
+        # Muon only supports 2D parameters. Optimize the rest (bias/norm/embeddings/conv, etc.)
+        # with a standard method (AdamW), as suggested in torch.optim.Muon docs.
+        muon_opt = torch.optim.Muon(
+            muon_2d,
+            lr=float(args.lr),
+            weight_decay=float(args.weight_decay),
+            momentum=float(args.momentum),
+            nesterov=True,
+        )
+        aux_opt = torch.optim.AdamW(
             [
-                {"params": decay, "weight_decay": float(args.weight_decay)},
-                {"params": no_decay, "weight_decay": 0.0},
+                {"params": aux_decay, "weight_decay": float(args.weight_decay)},
+                {"params": aux_no_decay, "weight_decay": 0.0},
             ],
             lr=float(args.lr),
         )
-
-    if args.scheduler == "cosine":
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=int(args.epochs))
-    elif args.scheduler == "step":
-        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=int(args.step_size), gamma=float(args.gamma))
+        optimizers = [muon_opt, aux_opt]
+        print(
+            f"Muon param split: 2D={len(muon_2d)} | aux(decay)={len(aux_decay)} | aux(no_decay)={len(aux_no_decay)}"
+        )
     else:
-        scheduler = None
+        raise ValueError(f"Unknown --optimizer {args.optimizer!r}")
+
+    schedulers: list[torch.optim.lr_scheduler.LRScheduler] = []
+    if args.scheduler == "cosine":
+        schedulers = [
+            torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=int(args.epochs)) for opt in optimizers
+        ]
+    elif args.scheduler == "step":
+        schedulers = [
+            torch.optim.lr_scheduler.StepLR(opt, step_size=int(args.step_size), gamma=float(args.gamma))
+            for opt in optimizers
+        ]
+    else:
+        schedulers = []
 
     start_epoch = 0
     best_val_acc = 0.0
     if args.resume:
         ckpt = load_checkpoint(args.resume, map_location=device)
         model.load_state_dict(ckpt["model"])
-        optimizer.load_state_dict(ckpt["optimizer"])
+        opt_state = ckpt.get("optimizer")
+        if isinstance(opt_state, list):
+            if len(opt_state) != len(optimizers):
+                raise RuntimeError(
+                    f"Checkpoint has {len(opt_state)} optimizer states but current run uses {len(optimizers)}."
+                )
+            for opt, state in zip(optimizers, opt_state, strict=True):
+                opt.load_state_dict(state)
+        elif isinstance(opt_state, dict):
+            optimizers[0].load_state_dict(opt_state)
+        elif opt_state is None:
+            pass
+        else:
+            raise RuntimeError(f"Unsupported optimizer state type in checkpoint: {type(opt_state)}")
         start_epoch = int(ckpt.get("epoch", 0))
         best_val_acc = float(ckpt.get("best_val_acc", 0.0))
         # `last.pt` previously stored a potentially stale `best_val_acc` (saved before
@@ -369,20 +480,20 @@ def main() -> None:
             except Exception:
                 pass
         # Make the LR scheduler continue from the resumed epoch index.
-        if scheduler is not None:
-            scheduler.last_epoch = start_epoch
+        for sch in schedulers:
+            sch.last_epoch = start_epoch
 
     metrics_path = os.path.join(args.output_dir, "metrics.jsonl")
     with open(metrics_path, "a", encoding="utf-8") as mf:
         for epoch in range(start_epoch, int(args.epochs)):
-            lr = float(optimizer.param_groups[0]["lr"])
+            lr = float(optimizers[0].param_groups[0]["lr"])
             _sync_device(device)
             t0 = time.perf_counter()
             train_m = _train_one_epoch(
                 model,
                 train_loader,
                 criterion,
-                optimizer,
+                optimizers,
                 device,
                 grad_clip=float(args.grad_clip),
                 pbar_desc=f"epoch {epoch+1}/{args.epochs} [train]",
@@ -398,8 +509,8 @@ def main() -> None:
             t_val = time.perf_counter() - t0
 
             t_epoch = t_train + t_val
-            if scheduler is not None:
-                scheduler.step()
+            for sch in schedulers:
+                sch.step()
 
             row: dict[str, Any] = {
                 "epoch": epoch + 1,
@@ -429,7 +540,7 @@ def main() -> None:
                     {
                         "epoch": epoch + 1,
                         "model": model.state_dict(),
-                        "optimizer": optimizer.state_dict(),
+                        "optimizer": [opt.state_dict() for opt in optimizers],
                         "best_val_acc": best_val_acc,
                         "args": vars(args),
                         "config": asdict(cfg),
@@ -442,7 +553,7 @@ def main() -> None:
                 {
                     "epoch": epoch + 1,
                     "model": model.state_dict(),
-                    "optimizer": optimizer.state_dict(),
+                    "optimizer": [opt.state_dict() for opt in optimizers],
                     "best_val_acc": best_val_acc,
                     "args": vars(args),
                     "config": asdict(cfg),

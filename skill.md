@@ -92,3 +92,23 @@
 - 把 `W2A4` 的稳定性做成 sweep：`lr × scale_mode × fp32_first_last × epochs`。
 - 做多次重复跑（至少 3 次）报告均值/方差，降低系统噪声对结论的影响。
 - 如要更快：考虑把数据增强搬到 GPU、或使用 `num_workers>0` 但配合共享内存/内存映射避免复制（复杂度会上升）。
+
+## 10) CIFAR-10 / CIFAR-100 复核（对照 SVHN 的“结论”是否可迁移）
+
+用 `validate_cifar.py` 在 CIFAR-10/100 上按同一套量化/ViT 设定做了对照，结论更接近“哪些经验是稳健的、哪些是数据集依赖的”：
+
+- **稳健结论（更容易迁移）**
+  - `scale_mode=meanabs2.5` 在低 bit（W2A4）下通常更稳/更好（但在 CIFAR 上不一定表现为 “maxabs 直接坍塌”，更多是精度差距）。
+  - Dropout(0.1) 在这套 ViT 小模型 + ≤10 epoch 的设定下依然明显变差（CIFAR-10/100 都如此）。
+  - optimizer 对 ViT 影响巨大：AdamW 明显强于 SGD（CIFAR-10/100 上仍成立）。
+
+- **不稳健结论（强数据集/设定依赖）**
+  - `--vit_patch_norm` 在 SVHN 上是显著正向 trick，但在 CIFAR-10/100 的本轮实验里，去掉 patch-norm 反而变好（提示：patch-norm 不是“必开”开关，可能和学习率/优化器/正则/数据增强存在耦合）。
+  - grad clip 在 CIFAR-10 上略有帮助，但在 CIFAR-100 上本轮实验里反而略负向；说明它更像是“风险控制工具”，并非总能提升指标。
+
+- **Muon（torch.optim.Muon）**
+  - Muon **只支持 2D 参数**，需要把 1D（bias/norm）和 4D（conv weight）等参数交给另一个优化器（这里用 AdamW）。
+  - 在 CIFAR-10/100 的 patch-norm-only 对照里，Muon（2D）+ AdamW（其余）比 AdamW/SGD 更好，值得作为 ViT 的额外候选优化器。
+
+- **工程坑**
+  - CIFAR 数据下载不要并行启动多个进程，否则会出现多个进程同时下载同一个 tarball 的风险；建议先单进程下载好，再并行跑实验。

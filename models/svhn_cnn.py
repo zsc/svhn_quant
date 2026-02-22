@@ -133,7 +133,7 @@ def _linear(
 
 
 class SVHNCNN(nn.Module):
-    def __init__(self, cfg: QuantConfig) -> None:
+    def __init__(self, cfg: QuantConfig, *, num_classes: int = 10) -> None:
         super().__init__()
         self.cfg = cfg
         qa = QuantActivation(cfg.a_bits) if cfg.a_bits < 32 else nn.Identity()
@@ -162,7 +162,7 @@ class SVHNCNN(nn.Module):
         self.dropout = nn.Dropout(0.5)
 
         self.fc1 = _linear(256 * 4 * 4, 512, cfg)
-        self.fc2 = _linear(512, 10, cfg, quant_override=last_quant, w_bits_override=last_w_bits)
+        self.fc2 = _linear(512, int(num_classes), cfg, quant_override=last_quant, w_bits_override=last_w_bits)
 
         self.qa = qa
 

@@ -55,6 +55,8 @@ Thumbs.db
 # Data files (large)
 *.mat
 *.tar.gz
+cifar-10-batches-py/
+cifar-100-python/
 
 # Checkpoints and logs
 checkpoints*/

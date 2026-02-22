@@ -5,6 +5,7 @@
 - **Balanced Quantization（arXiv:1706.07145）**：对 **权重** 做论文算法（Algorithm 1/2）量化，并用 **STE** 训练。
 - 可选 **激活量化**：通过 `--a_bits` 开启（用于 W/A bitwidth 组合实验）。
 - 参考对齐：提供与 `bit-rnn/bit_utils.py` 思路一致的 `scale=mean(abs(x))*2.5 + stop_gradient(detach)`、TF rounding 规则等工程实现。
+- 复用同一套训练脚本在 **CIFAR-10/100** 上做验证：`--dataset {cifar10,cifar100}`（torchvision 自动下载）。
 
 ---
 
@@ -19,6 +20,11 @@
 注意：SVHN 的标签里用 **10 表示数字 0**，loader 已在 `datasets/svhn_mat.py` 里统一做了 `10 -> 0` 映射，保证 label 范围为 `[0..9]`。
 
 默认行为：训练集会 **自动使用 `train + extra`**。如需关闭 extra，用 `--no_extra`。
+
+补充：CIFAR-10/100
+
+- 通过 `--dataset cifar10` / `--dataset cifar100` 使用 torchvision 数据集（会下载并解压到 `--data_dir`）。
+- 仓库已在 `.gitignore` 中忽略 `cifar-10-batches-py/`、`cifar-100-python/` 等目录，避免误提交大文件。
 
 ---
 
@@ -60,6 +66,12 @@ python train_svhn.py --device mps --quant balanced --w_bits 4 --a_bits 4 --data_
 
 ```bash
 python train_svhn.py --device mps --model vit --quant balanced --w_bits 4 --a_bits 4 --data_dir .
+```
+
+在 CIFAR-10 上跑同样的模型/量化（示例）：
+
+```bash
+python train_svhn.py --dataset cifar10 --device mps --model vit --quant balanced --w_bits 4 --a_bits 4 --data_dir .
 ```
 
 关闭 extra：
@@ -136,8 +148,9 @@ python train_svhn.py --device mps --quant balanced --w_bits 4 --a_bits 4 --no_ex
 关键参数：
 
 - `--device {auto,mps,cuda,cpu}`：建议 `--device mps`（Apple Silicon）
+- `--dataset {svhn,cifar10,cifar100}`：数据集选择（默认 `svhn`）
 - `--model {cnn,vit}`：选择模型（默认 `cnn`）
-- `--use_extra / --no_extra`：是否把 `extra_32x32.mat` 拼进训练集（默认开启）
+- `--use_extra / --no_extra`：仅对 SVHN 生效，是否把 `extra_32x32.mat` 拼进训练集（默认开启）
 - `--quant {none,balanced,uniform}`
 - `--w_bits {2,3,4,8,32}`：权重量化 bitwidth（32 表示不量化）
 - `--a_bits {2,3,4,8,32}`：激活量化 bitwidth（32 表示不量化）
@@ -163,7 +176,7 @@ macOS 建议：
 
 优化相关（可选 trick）：
 
-- `--optimizer {sgd,adamw}`：ViT 常用 `adamw`
+- `--optimizer {sgd,adamw,muon}`：ViT 常用 `adamw`；`muon` 需要注意它只支持 **2D 参数**，脚本会自动拆分：2D 用 Muon，其余参数用 AdamW。
 - `--grad_clip`：Transformer 常见的 grad-norm 裁剪
 - `--label_smoothing`
 
@@ -232,6 +245,8 @@ python train_svhn.py --device mps --model vit --quant balanced --w_bits 2 --a_bi
   --optimizer adamw --lr 0.0003 --weight_decay 0.05 --grad_clip 1.0 \
   --vit_pool mean --vit_patch_norm --epochs 10 --batch_size 256 --data_dir .
 ```
+
+同样支持 `--optimizer muon`（需要 PyTorch 提供 `torch.optim.Muon`），可用 `--momentum/--weight_decay` 调参。
 
 | 配置 | Epochs | Best Val acc | Test acc | 输出目录 |
 |---|---:|---:|---:|---|
