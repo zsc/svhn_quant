@@ -155,6 +155,8 @@ python train_svhn.py --device mps --quant balanced --w_bits 4 --a_bits 4 --no_ex
 - `--w_bits {2,3,4,8,32}`：权重量化 bitwidth（32 表示不量化）
 - `--a_bits {2,3,4,8,32}`：激活量化 bitwidth（32 表示不量化）
 - `--scale_mode {maxabs,meanabs2.5}`
+- `--w_transform {none,tanh}`：仅对 `--quant balanced` 生效，对权重先做变换（例如 `tanh(W)`）再走 BQ
+- `--w_bias_mode {none,mean}`：仅对 `--quant balanced` 生效，引入简单的 bias/zero-point（量化 `W-mean(W)` 后再把 mean 加回去）
 - `--fp32_first_last`：首层 conv + 末层 fc 保持 FP32（低 bit 可作为稳定性选项）
 - `--no_tqdm`：关进度条，方便做 sweep/跑日志
 
@@ -239,20 +241,27 @@ python sweep_bits.py --device mps --quant balanced --w_bits 8 4 2 --a_bits 8 4 2
 
 统一：`--model vit --w_bits 2 --a_bits 4`（除特别说明外使用 `--scale_mode meanabs2.5` 以便跨数据集对齐）
 
-| Dataset | Recipe | patch-norm | Optimizer | Epochs | Best Val acc | Test acc | 输出目录 |
-|---|---|---:|---|---:|---:|---:|---|
-| SVHN | wd+clip+mean-pool | ✅ | AdamW | 10 | 0.9823 | 0.9669 | `sweeps/2026-02-21_vit_balanced_w2a4_e10_extra_meanabs2.5_adamw_lr3e-4_wd0.05_clip1_poolmean_pnorm` |
-| CIFAR-10 | wd+clip+mean-pool | ✅ | AdamW | 10 | 0.5810 | 0.5560 | `sweeps/2026-02-22_cifar10_vit_bestrecipe_adamw_w2a4_meanabs2.5_e10` |
-| CIFAR-10 | wd+clip+mean-pool | ❌ | AdamW | 10 | 0.5892 | 0.5715 | `sweeps/2026-02-22_cifar10_vit_bestrecipe_adamw_w2a4_meanabs2.5_e10_nopnorm` |
-| CIFAR-10 | wd+clip+mean-pool | ❌ | Muon（2D）+ AdamW（其余） | 10 | 0.6318 | 0.6042 | `sweeps/2026-02-22_cifar10_vit_bestrecipe_muon_w2a4_meanabs2.5_e10_nopnorm_lr1e-3` |
-| CIFAR-100 | wd+clip+mean-pool | ✅ | AdamW | 10 | 0.2800 | 0.2764 | `sweeps/2026-02-22_cifar100_vit_bestrecipe_adamw_w2a4_meanabs2.5_e10` |
-| CIFAR-100 | wd+clip+mean-pool | ❌ | AdamW | 10 | 0.3076 | 0.2945 | `sweeps/2026-02-22_cifar100_vit_bestrecipe_adamw_w2a4_meanabs2.5_e10_nopnorm` |
-| CIFAR-100 | wd+clip+mean-pool | ❌ | Muon（2D）+ AdamW（其余） | 10 | 0.3252 | 0.3205 | `sweeps/2026-02-22_cifar100_vit_bestrecipe_muon_w2a4_meanabs2.5_e10_nopnorm_lr1e-3` |
+| Dataset | Recipe | patch-norm | Optimizer | lr | Epochs | Best Val acc | Test acc | 输出目录 |
+|---|---|---:|---|---:|---:|---:|---:|---|
+| SVHN | wd+clip+mean-pool | ✅ | AdamW | 3e-4 | 10 | 0.9823 | 0.9669 | `sweeps/2026-02-21_vit_balanced_w2a4_e10_extra_meanabs2.5_adamw_lr3e-4_wd0.05_clip1_poolmean_pnorm` |
+| SVHN | wd+clip+mean-pool | ✅ | Muon（2D）+ AdamW（其余） | 1e-3 | 10 | 0.9843 | 0.9726 | `sweeps/2026-02-22_svhn_vit_bestrecipe_muon_w2a4_meanabs2.5_e10_lr1e-3_wd0.05_clip1_poolmean_pnorm` |
+| CIFAR-10 | wd+clip+mean-pool | ✅ | AdamW | 3e-4 | 10 | 0.5810 | 0.5560 | `sweeps/2026-02-22_cifar10_vit_bestrecipe_adamw_w2a4_meanabs2.5_e10` |
+| CIFAR-10 | wd+clip+mean-pool | ✅ | AdamW | 1e-3 | 10 | 0.5722 | 0.5664 | `sweeps/2026-02-22_cifar10_vit_bestrecipe_adamw_w2a4_meanabs2.5_e10_lr1e-3` |
+| CIFAR-10 | wd+clip+mean-pool | ❌ | AdamW | 3e-4 | 10 | 0.5892 | 0.5715 | `sweeps/2026-02-22_cifar10_vit_bestrecipe_adamw_w2a4_meanabs2.5_e10_nopnorm` |
+| CIFAR-10 | wd+clip+mean-pool | ❌ | AdamW | 1e-3 | 10 | 0.5968 | 0.5785 | `sweeps/2026-02-22_cifar10_vit_bestrecipe_adamw_w2a4_meanabs2.5_e10_nopnorm_lr1e-3` |
+| CIFAR-10 | wd+clip+mean-pool | ❌ | Muon（2D）+ AdamW（其余） | 1e-3 | 10 | 0.6318 | 0.6042 | `sweeps/2026-02-22_cifar10_vit_bestrecipe_muon_w2a4_meanabs2.5_e10_nopnorm_lr1e-3` |
+| CIFAR-100 | wd+clip+mean-pool | ✅ | AdamW | 3e-4 | 10 | 0.2800 | 0.2764 | `sweeps/2026-02-22_cifar100_vit_bestrecipe_adamw_w2a4_meanabs2.5_e10` |
+| CIFAR-100 | wd+clip+mean-pool | ✅ | AdamW | 1e-3 | 10 | 0.2874 | 0.2845 | `sweeps/2026-02-22_cifar100_vit_bestrecipe_adamw_w2a4_meanabs2.5_e10_lr1e-3` |
+| CIFAR-100 | wd+clip+mean-pool | ❌ | AdamW | 3e-4 | 10 | 0.3076 | 0.2945 | `sweeps/2026-02-22_cifar100_vit_bestrecipe_adamw_w2a4_meanabs2.5_e10_nopnorm` |
+| CIFAR-100 | wd+clip+mean-pool | ❌ | AdamW | 1e-3 | 10 | 0.3080 | 0.3018 | `sweeps/2026-02-22_cifar100_vit_bestrecipe_adamw_w2a4_meanabs2.5_e10_nopnorm_lr1e-3` |
+| CIFAR-100 | wd+clip+mean-pool | ❌ | Muon（2D）+ AdamW（其余） | 1e-3 | 10 | 0.3252 | 0.3205 | `sweeps/2026-02-22_cifar100_vit_bestrecipe_muon_w2a4_meanabs2.5_e10_nopnorm_lr1e-3` |
 
 备注：
 
 - ViT 输入为 `32x32`，patch=`8`，因此 token 数为 `4x4 + 1(cls) = 17`。
 - `Muon` 在本仓库里按 PyTorch 限制做了参数拆分：仅 2D 参数用 `torch.optim.Muon`，其余参数用 AdamW（见 `train_svhn.py`）。
+- `wd+clip+mean-pool` 指：`--weight_decay 0.05 --grad_clip 1.0 --vit_pool mean`。
+- Muon 对 `lr` 更敏感：同一 recipe 下 `lr=3e-4` 往往明显更差（例如 SVHN `0.9504`：`sweeps/2026-02-22_svhn_vit_bestrecipe_muon_w2a4_meanabs2.5_e10_lr3e-4_wd0.05_clip1_poolmean_pnorm`；CIFAR-10 `0.5059`：`sweeps/2026-02-22_cifar10_vit_bestrecipe_muon_w2a4_meanabs2.5_e10_nopnorm_lr3e-4`；CIFAR-100 `0.2074`：`sweeps/2026-02-22_cifar100_vit_bestrecipe_muon_w2a4_meanabs2.5_e10_nopnorm_lr3e-4`）。
 - **ViT 并不“必须”使用 `meanabs2.5`**：在 SVHN 上同一套 best recipe 用论文默认的 `--scale_mode maxabs` 也能正常收敛到 `Test acc=0.9607`（`sweeps/2026-02-21_vit_balanced_w2a4_e10_extra_adamw_lr3e-4_wd0.05_clip1_poolmean_pnorm`），但 `meanabs2.5` 仍有小幅提升到 `0.9669`。
 
 ### 10.2 CNN：1 epoch 低 bit 稳定性（SVHN）
@@ -267,15 +276,20 @@ python sweep_bits.py --device mps --quant balanced --w_bits 8 4 2 --a_bits 8 4 2
 | W2A4 | 0.1164 | 0.0831 | 0.0670 | 1201.6 | 13.5 | 1215.1 | 26.7 | `sweeps/2026-02-21_balanced_w2a4_e1` |
 | W2A4 (meanabs2.5) | 0.8981 | 0.9669 | 0.9409 | 1073.5 | 73.3 | 1146.8 | 33.4 | `sweeps/2026-02-21_balanced_w2a4_e1_meanabs2.5` |
 
-### 10.3 `scale_mode`：W2A4 在 SVHN/CIFAR 的对照（CNN，1 epoch）
+### 10.3 W2A4 的 scale / transform / bias 对照（CNN，1 epoch）
 
 统一：`--model cnn --w_bits 2 --a_bits 4 --epochs 1`（其余同上）
 
-| Dataset | scale=maxabs（Test acc） | scale=meanabs2.5（Test acc） | 输出目录（maxabs / meanabs2.5） |
-|---|---:|---:|---|
-| SVHN | 0.0670 | 0.9409 | `sweeps/2026-02-21_balanced_w2a4_e1` / `sweeps/2026-02-21_balanced_w2a4_e1_meanabs2.5` |
-| CIFAR-10 | 0.3862 | 0.4839 | `sweeps/2026-02-22_cifar10_cnn_w2a4_e1_maxabs` / `sweeps/2026-02-22_cifar10_cnn_w2a4_e1_meanabs2.5` |
-| CIFAR-100 | 0.0729 | 0.1323 | `sweeps/2026-02-22_cifar100_cnn_w2a4_e1_maxabs` / `sweeps/2026-02-22_cifar100_cnn_w2a4_e1_meanabs2.5` |
+额外开关（仅对 `--quant balanced` 生效）：
+
+- `tanh(W)+maxabs`：`--scale_mode maxabs --w_transform tanh`
+- `maxabs+bias(mean)`：`--scale_mode maxabs --w_bias_mode mean`（先量化 `W-mean(W)`，再把 mean 加回去）
+
+| Dataset | maxabs（Test acc） | tanh(W)+maxabs（Test acc） | maxabs+bias(mean)（Test acc） | meanabs2.5（Test acc） | 输出目录 |
+|---|---:|---:|---:|---:|---|
+| SVHN | 0.0670 | 0.1959 | 0.0670 | 0.9409 | maxabs=`sweeps/2026-02-21_balanced_w2a4_e1`<br>tanh=`sweeps/2026-02-22_balanced_w2a4_e1_maxabs_tanh`<br>bias=`sweeps/2026-02-22_balanced_w2a4_e1_maxabs_biasmean`<br>meanabs=`sweeps/2026-02-21_balanced_w2a4_e1_meanabs2.5` |
+| CIFAR-10 | 0.3862 | 0.0874 | 0.3412 | 0.4839 | maxabs=`sweeps/2026-02-22_cifar10_cnn_w2a4_e1_maxabs`<br>tanh=`sweeps/2026-02-22_cifar10_cnn_w2a4_e1_maxabs_tanh`<br>bias=`sweeps/2026-02-22_cifar10_cnn_w2a4_e1_maxabs_biasmean`<br>meanabs=`sweeps/2026-02-22_cifar10_cnn_w2a4_e1_meanabs2.5` |
+| CIFAR-100 | 0.0729 | 0.0947 | 0.0706 | 0.1323 | maxabs=`sweeps/2026-02-22_cifar100_cnn_w2a4_e1_maxabs`<br>tanh=`sweeps/2026-02-22_cifar100_cnn_w2a4_e1_maxabs_tanh`<br>bias=`sweeps/2026-02-22_cifar100_cnn_w2a4_e1_maxabs_biasmean`<br>meanabs=`sweeps/2026-02-22_cifar100_cnn_w2a4_e1_meanabs2.5` |
 
 ### 10.4 ViT：Ablation（W2A4 meanabs2.5）
 
@@ -327,9 +341,9 @@ python sweep_bits.py --device mps --quant balanced --w_bits 8 4 2 --a_bits 8 4 2
 
 ### 10.5 总结
 
-- **CNN（W2A4）**：`scale_mode=maxabs` 风险很高（SVHN 上会坍塌到接近随机），`meanabs2.5` 更稳且跨数据集更一致。
+- **CNN（W2A4）**：`scale_mode=maxabs` 风险很高（SVHN 上会坍塌到接近随机），`meanabs2.5` 更稳且跨数据集更一致；`tanh(W)+maxabs` 与 `maxabs+bias(mean)` 在当前设定下都**不**是可靠替代（SVHN/CIFAR-10 上明显更差）。
 - **ViT（W2A4）**：在 SVHN 上 `maxabs` 也能正常训练，但 `meanabs2.5` 仍有小幅优势；CIFAR 上目前统一用 `meanabs2.5` 做对齐对照，尚未系统验证 ViT+`maxabs`。
 - ViT 在 ≤10 epoch 内的瓶颈主要不是 “多训一点/加 dropout”，而是优化器与 recipe：AdamW（或 Muon）明显强于 SGD；dropout(0.1) 在 SVHN/CIFAR-10/CIFAR-100 上都显著变差。
 - `--vit_patch_norm` 不是通用必开：SVHN 正向，但 CIFAR-10/100 反向（5 epoch 与 10 epoch 均复核）。
-- Muon 在 CIFAR-10/100 上收益稳定（同设定 10 epoch 下优于 AdamW/SGD）；SVHN 的 patch-norm-only 对照里也能略优于 AdamW。
+- Muon 对超参（尤其 `lr`）更敏感：同 recipe 下需要单独调参；在本轮 `wd+clip+mean-pool` 设定里，Muon 用 `lr=1e-3` 在 SVHN / CIFAR-10 / CIFAR-100 都优于 AdamW，而 `lr=3e-4` 往往明显更差。
 - 这些 CIFAR 指标主要用于验证“相对结论”（≤10 epoch + 小 ViT + 低 bit），不代表 SOTA；若追求绝对精度需更久训练与更大模型/更强增强。

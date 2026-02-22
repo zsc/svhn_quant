@@ -12,8 +12,26 @@ from models.svhn_cnn import QuantActivation, QuantConfig, QuantConv2d, QuantLine
 class MLP(nn.Module):
     def __init__(self, dim: int, hidden_dim: int, cfg: QuantConfig, *, drop: float) -> None:
         super().__init__()
-        self.fc1 = QuantLinear(dim, hidden_dim, quant=cfg.quant, w_bits=cfg.w_bits, equalize=cfg.equalize, scale_mode=cfg.scale_mode)
-        self.fc2 = QuantLinear(hidden_dim, dim, quant=cfg.quant, w_bits=cfg.w_bits, equalize=cfg.equalize, scale_mode=cfg.scale_mode)
+        self.fc1 = QuantLinear(
+            dim,
+            hidden_dim,
+            quant=cfg.quant,
+            w_bits=cfg.w_bits,
+            equalize=cfg.equalize,
+            scale_mode=cfg.scale_mode,
+            w_transform=cfg.w_transform,
+            w_bias_mode=cfg.w_bias_mode,
+        )
+        self.fc2 = QuantLinear(
+            hidden_dim,
+            dim,
+            quant=cfg.quant,
+            w_bits=cfg.w_bits,
+            equalize=cfg.equalize,
+            scale_mode=cfg.scale_mode,
+            w_transform=cfg.w_transform,
+            w_bias_mode=cfg.w_bias_mode,
+        )
         self.drop = nn.Dropout(float(drop))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:  # type: ignore[override]
@@ -35,8 +53,26 @@ class Attention(nn.Module):
         self.head_dim = int(dim // num_heads)
         self.scale = float(self.head_dim**-0.5)
 
-        self.qkv = QuantLinear(dim, dim * 3, quant=cfg.quant, w_bits=cfg.w_bits, equalize=cfg.equalize, scale_mode=cfg.scale_mode)
-        self.proj = QuantLinear(dim, dim, quant=cfg.quant, w_bits=cfg.w_bits, equalize=cfg.equalize, scale_mode=cfg.scale_mode)
+        self.qkv = QuantLinear(
+            dim,
+            dim * 3,
+            quant=cfg.quant,
+            w_bits=cfg.w_bits,
+            equalize=cfg.equalize,
+            scale_mode=cfg.scale_mode,
+            w_transform=cfg.w_transform,
+            w_bias_mode=cfg.w_bias_mode,
+        )
+        self.proj = QuantLinear(
+            dim,
+            dim,
+            quant=cfg.quant,
+            w_bits=cfg.w_bits,
+            equalize=cfg.equalize,
+            scale_mode=cfg.scale_mode,
+            w_transform=cfg.w_transform,
+            w_bias_mode=cfg.w_bias_mode,
+        )
         self.attn_drop = nn.Dropout(float(attn_drop))
         self.proj_drop = nn.Dropout(float(proj_drop))
 
@@ -130,6 +166,8 @@ class SVHNViT(nn.Module):
             w_bits=first_w_bits,
             equalize=cfg.equalize,
             scale_mode=cfg.scale_mode,
+            w_transform=cfg.w_transform,
+            w_bias_mode=cfg.w_bias_mode,
         )
 
         self.cls_token = nn.Parameter(torch.zeros(1, 1, int(embed_dim)))
@@ -163,6 +201,8 @@ class SVHNViT(nn.Module):
             w_bits=last_w_bits,
             equalize=cfg.equalize,
             scale_mode=cfg.scale_mode,
+            w_transform=cfg.w_transform,
+            w_bias_mode=cfg.w_bias_mode,
         )
 
         self._reset_parameters()

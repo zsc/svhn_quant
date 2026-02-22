@@ -12,6 +12,8 @@ from quantization.ops import ScaleMode, quantize_w_bitutils, uniform_quantize_ac
 
 
 QuantMode = Literal["none", "balanced", "uniform"]
+WeightTransform = Literal["none", "tanh"]
+WeightBiasMode = Literal["none", "mean"]
 
 
 @dataclass(frozen=True)
@@ -21,6 +23,8 @@ class QuantConfig:
     a_bits: int = 32
     equalize: EqualizeMode = "recursive_mean"
     scale_mode: ScaleMode = "maxabs"
+    w_transform: WeightTransform = "none"
+    w_bias_mode: WeightBiasMode = "none"
     fp32_first_last: bool = False
 
 
@@ -41,6 +45,8 @@ class QuantConv2d(nn.Conv2d):
         w_bits: int,
         equalize: EqualizeMode,
         scale_mode: ScaleMode,
+        w_transform: WeightTransform,
+        w_bias_mode: WeightBiasMode,
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
@@ -48,11 +54,20 @@ class QuantConv2d(nn.Conv2d):
         self.w_bits = int(w_bits)
         self.equalize = equalize
         self.scale_mode = scale_mode
+        self.w_transform = w_transform
+        self.w_bias_mode = w_bias_mode
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:  # type: ignore[override]
         w = self.weight
         if self.quant == "balanced":
+            if self.w_transform == "tanh":
+                w = torch.tanh(w)
+            if self.w_bias_mode == "mean":
+                w_bias = w.detach().mean()
+                w = w - w_bias
             w = balanced_quantize_weight(w, self.w_bits, scale_mode=self.scale_mode, equalize_mode=self.equalize, ste=True)
+            if self.w_bias_mode == "mean":
+                w = w + w_bias
         elif self.quant == "uniform":
             if self.scale_mode == "meanabs2.5":
                 # Align with bit-rnn: quantize_w(tanh(W)) with meanabs*2.5 scale + STE for clip/round.
@@ -70,6 +85,8 @@ class QuantLinear(nn.Linear):
         w_bits: int,
         equalize: EqualizeMode,
         scale_mode: ScaleMode,
+        w_transform: WeightTransform,
+        w_bias_mode: WeightBiasMode,
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
@@ -77,11 +94,20 @@ class QuantLinear(nn.Linear):
         self.w_bits = int(w_bits)
         self.equalize = equalize
         self.scale_mode = scale_mode
+        self.w_transform = w_transform
+        self.w_bias_mode = w_bias_mode
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:  # type: ignore[override]
         w = self.weight
         if self.quant == "balanced":
+            if self.w_transform == "tanh":
+                w = torch.tanh(w)
+            if self.w_bias_mode == "mean":
+                w_bias = w.detach().mean()
+                w = w - w_bias
             w = balanced_quantize_weight(w, self.w_bits, scale_mode=self.scale_mode, equalize_mode=self.equalize, ste=True)
+            if self.w_bias_mode == "mean":
+                w = w + w_bias
         elif self.quant == "uniform":
             if self.scale_mode == "meanabs2.5":
                 w = quantize_w_bitutils(torch.tanh(w), self.w_bits)
@@ -110,6 +136,8 @@ def _conv(
         w_bits=w_bits_override if w_bits_override is not None else cfg.w_bits,
         equalize=cfg.equalize,
         scale_mode=cfg.scale_mode,
+        w_transform=cfg.w_transform,
+        w_bias_mode=cfg.w_bias_mode,
     )
 
 
@@ -129,6 +157,8 @@ def _linear(
         w_bits=w_bits_override if w_bits_override is not None else cfg.w_bits,
         equalize=cfg.equalize,
         scale_mode=cfg.scale_mode,
+        w_transform=cfg.w_transform,
+        w_bias_mode=cfg.w_bias_mode,
     )
 
 

@@ -268,6 +268,20 @@ def main() -> None:
     parser.add_argument("--a_bits", type=int, choices=[2, 3, 4, 8, 32], default=32)
     parser.add_argument("--equalize", type=str, choices=["recursive_mean"], default="recursive_mean")
     parser.add_argument("--scale_mode", type=str, choices=["maxabs", "meanabs2.5"], default="maxabs")
+    parser.add_argument(
+        "--w_transform",
+        type=str,
+        choices=["none", "tanh"],
+        default="none",
+        help="Balanced quantization weight transform (e.g., tanh(W) + maxabs)",
+    )
+    parser.add_argument(
+        "--w_bias_mode",
+        type=str,
+        choices=["none", "mean"],
+        default="none",
+        help="Balanced quantization weight bias/zero-point: quantize W-mean(W) then add mean(W) back",
+    )
     parser.add_argument("--fp32_first_last", action="store_true")
 
     # ViT arch (used when --model vit)
@@ -323,6 +337,8 @@ def main() -> None:
         a_bits=int(args.a_bits),
         equalize=args.equalize,
         scale_mode=args.scale_mode,
+        w_transform=str(args.w_transform),
+        w_bias_mode=str(args.w_bias_mode),
         fp32_first_last=bool(args.fp32_first_last),
     )
     num_classes = 10 if args.dataset in {"svhn", "cifar10"} else 100
