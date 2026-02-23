@@ -150,10 +150,12 @@ class SVHNViT(nn.Module):
         grid = 32 // patch
         num_patches = grid * grid
 
-        first_quant = "none" if cfg.fp32_first_last else cfg.quant
-        first_w_bits = 32 if cfg.fp32_first_last else cfg.w_bits
-        last_quant = "none" if cfg.fp32_first_last else cfg.quant
-        last_w_bits = 32 if cfg.fp32_first_last else cfg.w_bits
+        first_fp32 = bool(cfg.fp32_first_last or cfg.fp32_first)
+        last_fp32 = bool(cfg.fp32_first_last or cfg.fp32_last)
+        first_quant = "none" if first_fp32 else cfg.quant
+        first_w_bits = 32 if first_fp32 else cfg.w_bits
+        last_quant = "none" if last_fp32 else cfg.quant
+        last_w_bits = 32 if last_fp32 else cfg.w_bits
 
         self.patch_embed = QuantConv2d(
             3,

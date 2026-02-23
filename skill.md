@@ -55,56 +55,59 @@
   - `round_bit(x, bit) = round(x*k)/k` 用 TF rounding 规则 + STE
   - 某些路径会对权重先做 `tanh(W)` 再量化（bit-rnn 常见做法）
 
-## 6) 低 bit（尤其 W2A4）稳定性：scale_mode 很关键
+## 6) 低 bit（W≤2：W2A2/W1A2 等）稳定性：`scale_mode` + `--fp32_last` 是关键
 
-- 实测：`W2A4 + scale_mode=maxabs` 可能出现训练坍塌（loss 巨大、acc 接近随机）。
-- 同样配置下改用 `--scale_mode meanabs2.5` 可显著稳定并恢复到正常精度（1 epoch 即可达到较高 test acc）。
-- 进一步的稳定性开关（建议优先尝试）：
-  - `--fp32_first_last`
-  - 更小学习率（例如 `--lr 0.001`）
-  - 适当增加 epoch（低 bit 通常需要更多 epoch）
+- **CNN + Balanced Quantization** 下，`--scale_mode maxabs` 在 W≤2 时很容易出现 **`NaN` 崩溃**（SVHN / CIFAR-10 多次复现）；`--scale_mode meanabs2.5` 是最稳妥的起手式。
+- 如果想坚持用论文默认的 `maxabs`（例如追求更好的上限/更接近论文定义），建议先加 **`--fp32_last`**（最后一层 head 保持 fp32）再谈别的：
+  - 对 W2A2：`maxabs + --fp32_last` 可以把 “NaN 崩溃” 拉回到正常训练；
+  - 对 W1A2：即使 `meanabs2.5` 不 NaN，**不加 `--fp32_last` 往往也学不动**；`--fp32_last` 是目前验证过的最小有效改动（跨 SVHN/CIFAR-10/CIFAR-100）。
+- `--fp32_first` 单独开通常不够（甚至仍会 NaN/不学习）；要么 `--fp32_last`，要么 `--fp32_first_last`。
+- 激活位宽（`a_bits`）在 W=1 的场景里更像次要因素：先把 `scale_mode`/`fp32_last` 稳住，再做 A bit 消融。
+- 经验：`meanabs2.5` 更像“稳定性技巧”。一旦用 `--fp32_last` 稳住，`maxabs` 在一些组合上可能不差甚至更好（例如 CIFAR-10 CNN 的 W2A2，5 epochs）。
 
-## 7) ViT 的关键训练 recipe（≤10 epoch 也能很高）
+## 7) ViT：别用 CNN 的默认超参直接比
 
-- ViT（`--model vit --vit_patch 8`）在 SVHN 上对训练 recipe 非常敏感：
-  - `SGD + lr=1e-3` 的 10-epoch test acc 只有 `~0.86`（W8A8）。
-  - 以为“不够训/加 dropout”能救：实测 `drop=0.1` 反而让 test acc 掉到 `~0.79`（W8A8），W2A4 也明显更差。
-- 影响最大的组合（实测能把 ViT 的 test acc 拉到 `~0.96+`）：
-  - `--optimizer adamw --lr 3e-4 --weight_decay 0.05 --grad_clip 1.0`
-  - `--vit_pool mean --vit_patch_norm`
-- 简单 ablation（W2A4 meanabs2.5，5 epochs）显示重要性排序大致是：
-  - `--vit_patch_norm`（最关键，去掉约 `-2.0%` test acc）
-  - `--grad_clip 1.0`（有帮助，去掉约 `-0.4%`）
-  - `--vit_pool mean`（小幅提升，换成 `cls` 约 `-0.2%`）
-  - `--weight_decay 0.05`（小幅提升，设成 0 约 `-0.2%`）
-- AdamW vs SGD（同样只开 `--vit_patch_norm`，10 epochs）差距非常大：AdamW test `~0.963`，SGD test `~0.855`。这说明在本设置下 **AdamW 本身也是关键因素**。
-- “只开 patch-norm” 是否足够：AdamW + patch-norm-only 的 10-epoch test `~0.963`，距离最佳 recipe（`~0.967`）只差 `~0.4%`，但仍略落后；mean pooling / grad clip / 合适的 weight decay 贡献的是最后这点增益。
-- AdamW 的 weight decay 分组也很关键：bias / norm / `pos_embed` / `cls_token` 建议 **不做** weight decay（这里已在 `train_svhn.py` 实现）。
+- 本仓库的 ViT block 是 **pre-norm**（`x + Attn(LN(x))` / `x + MLP(LN(x))`），但训练仍对 optimizer/正则/patch size 很敏感。
+- 如果看到 ViT acc 明显落后 CNN，优先怀疑是 **训练 recipe**，不是“ViT 天生更差/只收敛慢”：
+  - CIFAR-10 上，默认 SGD（5 epochs）test 约 `~0.43`；
+  - 换 AdamW + 合理正则 + `--vit_patch 4` 后，20 epochs test 可到 `~0.74`，100 epochs（fp32）test 可到 `~0.83`。
+- CIFAR 系列的推荐起手式（fp32 / 低 bit 都可先用这个 recipe 再做对照）：
+  - `--optimizer adamw --lr 5e-4 --weight_decay 0.05 --scheduler cosine`
+  - `--label_smoothing 0.1 --grad_clip 1.0`
+  - `--vit_patch 4 --vit_patch_norm --vit_pool mean --vit_drop 0.1 --vit_attn_drop 0.1`
+- 低比特 ViT：在“调好 recipe”后 gap 可以很小。CIFAR-10 上 100 epochs 的例子里，W2A2 / W1A2(+`--fp32_last`) 的 test 约 `~0.81`，fp32 test 约 `~0.83`（绝对差 `~1.7%`）。
+- `scale_mode`：在 ViT 上我们没有复现到 `maxabs` 的 NaN 崩溃（和 CNN 不同），但低 bit 仍建议做一次 sanity check（特别是换 optimizer / patch size / 正则之后）。
 
 ## 8) 复现与实验管理
 
 - **对齐设定**：对比不同 W/A bits 时，统一 seed、batch_size、val_split、优化器、scheduler、数据增强开关。
 - **记录命令/配置/时间**：把 config + 指标 + time 都落到 `metrics.jsonl`，再生成 report（表格最直观）。
 - **不要覆盖/删除输出目录**：每次实验写到独立 `output_dir`，便于回溯与复现（也避免误删）。
+- **把结论分层记录**：`notes.md` 作为实验日志（允许“暂定结论”）；`findings.md` 只放跨数据集/多次复核的稳定结论。
+- **磁盘空间优先**：大 sweep 时建议默认 `--no_save_last --no_save_optimizer --no_save_best`（只留 `metrics.jsonl/run.log`），避免 checkpoint 爆盘。
+- **文档别写“幽灵路径”**：README 里的表格/结论尽量引用真实存在的 `runs/...` 输出目录；如果目录结构调整过（例如历史上叫 `sweeps/...`），要同步更新，否则后续复现会被卡住。
+- **并行跑提高吞吐**：GPU util 低时可以并行启动多个训练进程（例如用 `sweep_bits.py --jobs N`），但要接受单个 job 变慢的代价（资源竞争）。
+- **下载/解压不要并行**：CIFAR/其他自动下载的数据，建议先单进程下载好再并行跑，避免多进程同时写同一个 tarball。
 
 ## 9) 推荐的下一步（如果继续扩展）
 
-- 把 `W2A4` 的稳定性做成 sweep：`lr × scale_mode × fp32_first_last × epochs`。
+- 把 **W≤2** 的稳定性做成 sweep：`scale_mode × fp32_last × optimizer × epochs`（再按数据集复核）。
+- 复杂实验一律做 ablation：优先找 “最小改动集合”（例如先测 `--fp32_last` 是否足够，再决定是否加 `--fp32_first` / `--w_transform` / 改优化器等）。
+- ViT 先把 fp32 baseline 调到合理水平，再做低 bit 对照（否则很难分清是“量化问题”还是“训练 recipe 问题”）。
 - 做多次重复跑（至少 3 次）报告均值/方差，降低系统噪声对结论的影响。
-- 如要更快：考虑把数据增强搬到 GPU、或使用 `num_workers>0` 但配合共享内存/内存映射避免复制（复杂度会上升）。
 
 ## 10) CIFAR-10 / CIFAR-100 复核（对照 SVHN 的“结论”是否可迁移）
 
 用 `validate_cifar.py` 在 CIFAR-10/100 上按同一套量化/ViT 设定做了对照，结论更接近“哪些经验是稳健的、哪些是数据集依赖的”：
 
 - **稳健结论（更容易迁移）**
-  - `scale_mode=meanabs2.5` 在低 bit（W2A4）下通常更稳/更好（但在 CIFAR 上不一定表现为 “maxabs 直接坍塌”，更多是精度差距）。
-  - Dropout(0.1) 在这套 ViT 小模型 + ≤10 epoch 的设定下依然明显变差（CIFAR-10/100 都如此）。
-  - optimizer 对 ViT 影响巨大：AdamW 明显强于 SGD（CIFAR-10/100 上仍成立）。
+  - 对 CNN + Balanced：W≤2 下 `scale_mode=meanabs2.5` 更稳；若用 `maxabs`，优先尝试 `--fp32_last` 来避免崩溃并让模型学得动。
+  - 对 CNN + Balanced：W1A2 下 `--fp32_last` 是目前观测到的最小有效改动（跨 SVHN/CIFAR-10/CIFAR-100 均复核过）。
+  - 对 ViT：optimizer/recipe 的影响往往大于量化本身；AdamW 通常明显强于 SGD（尤其是短 epoch）。
 
 - **不稳健结论（强数据集/设定依赖）**
-  - `--vit_patch_norm` 在 SVHN 上是显著正向 trick，但在 CIFAR-10/100 的本轮实验里，去掉 patch-norm 反而变好（提示：patch-norm 不是“必开”开关，可能和学习率/优化器/正则/数据增强存在耦合）。
-  - grad clip 在 CIFAR-10 上略有帮助，但在 CIFAR-100 上本轮实验里反而略负向；说明它更像是“风险控制工具”，并非总能提升指标。
+  - `--vit_patch_norm` / `--vit_pool` / dropout 等 trick 不是“必开”，它们会和 patch size / optimizer / epoch / 正则产生耦合：某些短跑设定下是负向，但换配方/训更久可能会反转；因此建议每次只改一个变量做 ablation。
+  - `meanabs2.5` vs `maxabs` 的“精度上限”也依赖于是否已经稳定住：`meanabs2.5` 往往先救稳定性，但稳定后 `maxabs` 可能追平甚至更好（需要在固定 recipe 下跑到足够 epochs 才能判断）。
 
 - **Muon（torch.optim.Muon）**
   - Muon **只支持 2D 参数**，需要把 1D（bias/norm）和 4D（conv weight）等参数交给另一个优化器（这里用 AdamW）。
@@ -112,3 +115,9 @@
 
 - **工程坑**
   - CIFAR 数据下载不要并行启动多个进程，否则会出现多个进程同时下载同一个 tarball 的风险；建议先单进程下载好，再并行跑实验。
+
+## 11) 速度与耗时：量化 ≠ 加速（本仓库实现是纯 PyTorch）
+
+- **不要默认以为低 bit 会更快**：本仓库的量化在 forward 里会做额外的 equalize/round/clamp 等张量操作；在没有 bitwise 推理内核/融合算子时，训练常见现象是 **低 bit 反而更慢**（尤其是 ViT）。
+- **用“前几 epoch × epochs”估时**：先跑 3~5 个 epoch（计时需 `synchronize()`），再乘以总 epoch 数估算总耗时；注意前几轮有 warmup/缓存效应，最好再留 10%~20% buffer。
+- **一个具体参照（仅供量级感知，强依赖硬件/实现）**：在本环境（CUDA）里 CIFAR-10 ViT 的 100 epochs，fp32 约 ~21 min，而 W2A2/W1A2（含量化）约 ~31 min（见 `notes.md` 对应记录）。在 Apple MPS 上的绝对时间会不同，但“量化未必更快”的结论通常仍成立。

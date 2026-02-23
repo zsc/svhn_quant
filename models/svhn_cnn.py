@@ -26,6 +26,8 @@ class QuantConfig:
     w_transform: WeightTransform = "none"
     w_bias_mode: WeightBiasMode = "none"
     fp32_first_last: bool = False
+    fp32_first: bool = False
+    fp32_last: bool = False
 
 
 class QuantActivation(nn.Module):
@@ -168,10 +170,12 @@ class SVHNCNN(nn.Module):
         self.cfg = cfg
         qa = QuantActivation(cfg.a_bits) if cfg.a_bits < 32 else nn.Identity()
 
-        first_quant = "none" if cfg.fp32_first_last else cfg.quant
-        first_w_bits = 32 if cfg.fp32_first_last else cfg.w_bits
-        last_quant = "none" if cfg.fp32_first_last else cfg.quant
-        last_w_bits = 32 if cfg.fp32_first_last else cfg.w_bits
+        first_fp32 = bool(cfg.fp32_first_last or cfg.fp32_first)
+        last_fp32 = bool(cfg.fp32_first_last or cfg.fp32_last)
+        first_quant = "none" if first_fp32 else cfg.quant
+        first_w_bits = 32 if first_fp32 else cfg.w_bits
+        last_quant = "none" if last_fp32 else cfg.quant
+        last_w_bits = 32 if last_fp32 else cfg.w_bits
 
         self.conv1 = _conv(3, 64, cfg, quant_override=first_quant, w_bits_override=first_w_bits)
         self.bn1 = nn.BatchNorm2d(64)

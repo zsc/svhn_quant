@@ -152,12 +152,14 @@ python train_svhn.py --device mps --quant balanced --w_bits 4 --a_bits 4 --no_ex
 - `--model {cnn,vit}`：选择模型（默认 `cnn`）
 - `--use_extra / --no_extra`：仅对 SVHN 生效，是否把 `extra_32x32.mat` 拼进训练集（默认开启）
 - `--quant {none,balanced,uniform}`
-- `--w_bits {2,3,4,8,32}`：权重量化 bitwidth（32 表示不量化）
-- `--a_bits {2,3,4,8,32}`：激活量化 bitwidth（32 表示不量化）
+- `--w_bits {1,2,3,4,8,32}`：权重量化 bitwidth（32 表示不量化）
+- `--a_bits {1,2,3,4,8,32}`：激活量化 bitwidth（32 表示不量化）
 - `--scale_mode {maxabs,meanabs2.5}`
 - `--w_transform {none,tanh}`：仅对 `--quant balanced` 生效，对权重先做变换（例如 `tanh(W)`）再走 BQ
 - `--w_bias_mode {none,mean}`：仅对 `--quant balanced` 生效，引入简单的 bias/zero-point（量化 `W-mean(W)` 后再把 mean 加回去）
-- `--fp32_first_last`：首层 conv + 末层 fc 保持 FP32（低 bit 可作为稳定性选项）
+- `--fp32_first_last`：首层 + 末层保持 FP32（低 bit 稳定性常用开关）
+- `--fp32_first`：仅首层保持 FP32
+- `--fp32_last`：仅末层保持 FP32
 - `--no_tqdm`：关进度条，方便做 sweep/跑日志
 
 ViT 结构参数（仅 `--model vit` 生效）：
@@ -192,6 +194,12 @@ macOS 建议：
 - `last.pt`：最后一个 epoch
 - `metrics.jsonl`：每个 epoch 的 `train/val` 指标 + `time_sec`（train/val/epoch），以及最终 `test` 行
 
+磁盘空间紧张时可用：
+
+- `--no_save_last`：不写 `last.pt`
+- `--no_save_optimizer`：checkpoint 不保存 optimizer state（体积显著变小，但 resume 不会恢复 optimizer）
+- `--no_save_best`：不写 `best.pt`（只保留 `metrics.jsonl`；适合大规模 sweep）
+
 ---
 
 ## 7. 评估
@@ -208,6 +216,12 @@ python eval_svhn.py --ckpt checkpoints/best.pt --device mps --data_dir .
 pytest -q
 ```
 
+如果环境里有 pytest 插件冲突（例如 hydra/omegaconf 导致 import error），可用：
+
+```bash
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest -q
+```
+
 ---
 
 ## 9. Sweep（可选）
@@ -218,132 +232,66 @@ pytest -q
 python sweep_bits.py --device mps --quant balanced --w_bits 8 4 2 --a_bits 8 4 2
 ```
 
+支持并行与 CIFAR（示例：CIFAR-10 + 4-way 并行 + 少落盘）：
+
+```bash
+python sweep_bits.py --dataset cifar10 --device cuda --quant balanced --w_bits 2 1 --a_bits 2 --scale_mode meanabs2.5 --epochs 1 --jobs 4 --hflip --fp32_last --no_save_last --no_save_optimizer --no_save_best
+```
+
 ---
 
-## 10. 实验结果
+## 10. 实验结论（来自 notes.md）
 
-本节把目前跑过的核心实验结果集中整理（先列结果，再做总结），并尽量保证对齐可比。
+> 说明：代码目标平台是 Apple Silicon（MPS），但本轮实验记录是在 CUDA 环境（`torch 2.8.0+cu128`）上完成；绝对耗时与最终精度会因硬件/实现而不同。下面只摘录“可复现 + 对结论最关键”的部分。完整实验日志请看 `notes.md`，稳定结论请看 `findings.md`，工程踩坑点请看 `skill.md`。
 
-除特别说明外统一设定：
+### 10.1 CNN：W≤2 的稳定性与最小改动（Balanced Quantization）
 
-- 设备：Apple M4 Pro（`--device mps`）
-- 量化：`--quant balanced --equalize recursive_mean`
-- 训练：`--batch_size 256 --seed 42 --val_split 0.1 --no_tqdm`
-- SVHN：默认用 `train+extra`（`--use_extra` 默认开启），增强仅 `RandomCrop(32,padding=4)`；不启用水平翻转
-- CIFAR-10/100：通过 `--dataset {cifar10,cifar100}`，增强为 `RandomCrop(32,padding=4)+RandomHorizontalFlip(0.5)`（`--hflip`）
+核心结论（已在 `svhn/cifar10/cifar100` 上做过复核）：
 
-指标含义：
+- `--scale_mode maxabs` 在 W≤2 时可能 **NaN 崩溃**；`--scale_mode meanabs2.5` 更稳（尤其是先跑通基线/做大 sweep 时）。
+- W1A2 想学得动，`--fp32_last` 是目前验证过的 **最小有效开关**（仅 `--fp32_first` 不够）。
+- 如果坚持用论文默认 `maxabs`，建议优先 `+ --fp32_last` 先把训练稳定住，再做别的 ablation。
 
-- `Best Val acc`：训练过程中 val acc 的最大值
-- `Test acc`：训练结束后加载 `best.pt` 在 test 上评估
+代表性对照（CNN，5 epochs，seed=42，SGD lr=0.01）：
 
-### 10.1 ViT（8x8 patch，W2A4，≤10 epoch）结果一览
+SVHN（`train+extra`）：
 
-统一：`--model vit --w_bits 2 --a_bits 4`（除特别说明外使用 `--scale_mode meanabs2.5` 以便跨数据集对齐）
+| 配置 | Best Val acc | Test acc | 输出目录（本地 runs/，已 gitignore） |
+|---|---:|---:|---|
+| W2A2 + `meanabs2.5` | 0.9812 | 0.9667 | `runs/lowbits_2026-02-22/svhn_e5_compare/w2a2_meanabs2.5_e5_s42` |
+| W2A2 + `maxabs` + `--fp32_last` | 0.9818 | 0.9671 | `runs/lowbits_2026-02-22/svhn_e5_compare/w2a2_maxabs_fp32last_e5_s42` |
+| W1A2 + `meanabs2.5` + `--fp32_last` | 0.9793 | 0.9596 | `runs/lowbits_2026-02-22/svhn_e5_compare/w1a2_meanabs2.5_fp32last_e5_s42` |
+| W1A2 + `maxabs` + `--fp32_last` | 0.9781 | 0.9587 | `runs/lowbits_2026-02-22/svhn_e5_compare/w1a2_maxabs_fp32last_e5_s42` |
 
-| Dataset | Recipe | patch-norm | Optimizer | lr | Epochs | Best Val acc | Test acc | 输出目录 |
-|---|---|---:|---|---:|---:|---:|---:|---|
-| SVHN | wd+clip+mean-pool | ✅ | AdamW | 3e-4 | 10 | 0.9823 | 0.9669 | `sweeps/2026-02-21_vit_balanced_w2a4_e10_extra_meanabs2.5_adamw_lr3e-4_wd0.05_clip1_poolmean_pnorm` |
-| SVHN | wd+clip+mean-pool | ✅ | Muon（2D）+ AdamW（其余） | 1e-3 | 10 | 0.9843 | 0.9726 | `sweeps/2026-02-22_svhn_vit_bestrecipe_muon_w2a4_meanabs2.5_e10_lr1e-3_wd0.05_clip1_poolmean_pnorm` |
-| CIFAR-10 | wd+clip+mean-pool | ✅ | AdamW | 3e-4 | 10 | 0.5810 | 0.5560 | `sweeps/2026-02-22_cifar10_vit_bestrecipe_adamw_w2a4_meanabs2.5_e10` |
-| CIFAR-10 | wd+clip+mean-pool | ✅ | AdamW | 1e-3 | 10 | 0.5722 | 0.5664 | `sweeps/2026-02-22_cifar10_vit_bestrecipe_adamw_w2a4_meanabs2.5_e10_lr1e-3` |
-| CIFAR-10 | wd+clip+mean-pool | ❌ | AdamW | 3e-4 | 10 | 0.5892 | 0.5715 | `sweeps/2026-02-22_cifar10_vit_bestrecipe_adamw_w2a4_meanabs2.5_e10_nopnorm` |
-| CIFAR-10 | wd+clip+mean-pool | ❌ | AdamW | 1e-3 | 10 | 0.5968 | 0.5785 | `sweeps/2026-02-22_cifar10_vit_bestrecipe_adamw_w2a4_meanabs2.5_e10_nopnorm_lr1e-3` |
-| CIFAR-10 | wd+clip+mean-pool | ❌ | Muon（2D）+ AdamW（其余） | 1e-3 | 10 | 0.6318 | 0.6042 | `sweeps/2026-02-22_cifar10_vit_bestrecipe_muon_w2a4_meanabs2.5_e10_nopnorm_lr1e-3` |
-| CIFAR-100 | wd+clip+mean-pool | ✅ | AdamW | 3e-4 | 10 | 0.2800 | 0.2764 | `sweeps/2026-02-22_cifar100_vit_bestrecipe_adamw_w2a4_meanabs2.5_e10` |
-| CIFAR-100 | wd+clip+mean-pool | ✅ | AdamW | 1e-3 | 10 | 0.2874 | 0.2845 | `sweeps/2026-02-22_cifar100_vit_bestrecipe_adamw_w2a4_meanabs2.5_e10_lr1e-3` |
-| CIFAR-100 | wd+clip+mean-pool | ❌ | AdamW | 3e-4 | 10 | 0.3076 | 0.2945 | `sweeps/2026-02-22_cifar100_vit_bestrecipe_adamw_w2a4_meanabs2.5_e10_nopnorm` |
-| CIFAR-100 | wd+clip+mean-pool | ❌ | AdamW | 1e-3 | 10 | 0.3080 | 0.3018 | `sweeps/2026-02-22_cifar100_vit_bestrecipe_adamw_w2a4_meanabs2.5_e10_nopnorm_lr1e-3` |
-| CIFAR-100 | wd+clip+mean-pool | ❌ | Muon（2D）+ AdamW（其余） | 1e-3 | 10 | 0.3252 | 0.3205 | `sweeps/2026-02-22_cifar100_vit_bestrecipe_muon_w2a4_meanabs2.5_e10_nopnorm_lr1e-3` |
+CIFAR-10（含 `--hflip`）：
 
-备注：
+| 配置 | Best Val acc | Test acc | 输出目录（本地 runs/，已 gitignore） |
+|---|---:|---:|---|
+| W2A2 + `meanabs2.5` | 0.7172 | 0.7122 | `runs/lowbits_2026-02-22/cifar10_e5_compare/w2a2_meanabs2.5_e5_s42` |
+| W2A2 + `maxabs` + `--fp32_last` | 0.7576 | 0.7447 | `runs/lowbits_2026-02-22/cifar10_e5_compare/w2a2_maxabs_fp32last_e5_s42` |
+| W1A2 + `meanabs2.5` + `--fp32_last` | 0.7060 | 0.6929 | `runs/lowbits_2026-02-22/cifar10_e5_compare/w1a2_meanabs2.5_fp32last_e5_s42` |
+| W1A2 + `maxabs` + `--fp32_last` | 0.6856 | 0.6845 | `runs/lowbits_2026-02-22/cifar10_e5_compare/w1a2_maxabs_fp32last_e5_s42` |
 
-- ViT 输入为 `32x32`，patch=`8`，因此 token 数为 `4x4 + 1(cls) = 17`。
-- `Muon` 在本仓库里按 PyTorch 限制做了参数拆分：仅 2D 参数用 `torch.optim.Muon`，其余参数用 AdamW（见 `train_svhn.py`）。
-- `wd+clip+mean-pool` 指：`--weight_decay 0.05 --grad_clip 1.0 --vit_pool mean`。
-- Muon 对 `lr` 更敏感：同一 recipe 下 `lr=3e-4` 往往明显更差（例如 SVHN `0.9504`：`sweeps/2026-02-22_svhn_vit_bestrecipe_muon_w2a4_meanabs2.5_e10_lr3e-4_wd0.05_clip1_poolmean_pnorm`；CIFAR-10 `0.5059`：`sweeps/2026-02-22_cifar10_vit_bestrecipe_muon_w2a4_meanabs2.5_e10_nopnorm_lr3e-4`；CIFAR-100 `0.2074`：`sweeps/2026-02-22_cifar100_vit_bestrecipe_muon_w2a4_meanabs2.5_e10_nopnorm_lr3e-4`）。
-- **ViT 并不“必须”使用 `meanabs2.5`**：在 SVHN 上同一套 best recipe 用论文默认的 `--scale_mode maxabs` 也能正常收敛到 `Test acc=0.9607`（`sweeps/2026-02-21_vit_balanced_w2a4_e10_extra_adamw_lr3e-4_wd0.05_clip1_poolmean_pnorm`），但 `meanabs2.5` 仍有小幅提升到 `0.9669`。
+补充解释（和消融策略有关）：`meanabs2.5` 更像“先救稳定性”的默认选项；一旦用 `--fp32_last` 稳住，`maxabs` 在部分组合上可能追平甚至更好（例如上面的 CIFAR-10 W2A2）。
 
-### 10.2 CNN：1 epoch 低 bit 稳定性（SVHN）
+### 10.2 ViT：acc 差距往往是 recipe，不是“收敛慢/结构问题”
 
-以下为 SVHN（`train+extra`）上 1 epoch 的 W/A bitwidth 与耗时（除最后一行外 `--scale_mode maxabs`）：
+- 本仓库的 ViT block 是 **pre-norm**（`x + Attn(LN(x))` / `x + MLP(LN(x))`，见 `models/svhn_vit.py`）。
+- 如果 ViT acc 明显落后 CNN，优先怀疑 **优化器/正则/patch size** 等 recipe：默认 SGD + 短训会非常吃亏。
+- 在 CIFAR-10 上，先把 fp32 的 ViT 训练 recipe 调到合理水平后，再做 W2A2/W1A2 对照，低比特 gap 可以很小。
 
-| 配置 | Train acc | Val acc | Test acc | Train(s) | Val(s) | Epoch(s) | Test(s) | 输出目录 |
-|---|---:|---:|---:|---:|---:|---:|---:|---|
-| W8A8 | 0.9231 | 0.9696 | 0.9469 | 345.3 | 106.0 | 451.2 | 44.8 | `sweeps/2026-02-21_balanced_w8a8_e1` |
-| W4A8 | 0.9171 | 0.9686 | 0.9431 | 1121.9 | 84.3 | 1206.2 | 36.4 | `sweeps/2026-02-21_balanced_w4a8_e1` |
-| W4A4 | 0.9170 | 0.9670 | 0.9400 | 1185.7 | 83.0 | 1268.7 | 36.3 | `sweeps/2026-02-21_balanced_w4a4_e1` |
-| W2A4 | 0.1164 | 0.0831 | 0.0670 | 1201.6 | 13.5 | 1215.1 | 26.7 | `sweeps/2026-02-21_balanced_w2a4_e1` |
-| W2A4 (meanabs2.5) | 0.8981 | 0.9669 | 0.9409 | 1073.5 | 73.3 | 1146.8 | 33.4 | `sweeps/2026-02-21_balanced_w2a4_e1_meanabs2.5` |
+推荐起手式（CIFAR 系列，先跑 fp32 拉起基线，再做量化对照）：
 
-### 10.3 W2A4 的 scale / transform / bias 对照（CNN，1 epoch）
+```bash
+python train_svhn.py --dataset cifar10 --model vit --optimizer adamw --lr 5e-4 --weight_decay 0.05 --scheduler cosine --label_smoothing 0.1 --grad_clip 1.0 --vit_patch 4 --vit_patch_norm --vit_pool mean --vit_drop 0.1 --vit_attn_drop 0.1 --epochs 100 --quant none --w_bits 32 --a_bits 32 --device auto
+```
 
-统一：`--model cnn --w_bits 2 --a_bits 4 --epochs 1`（其余同上）
+代表性结果（CIFAR-10 ViT，100 epochs，seed=42）：
 
-额外开关（仅对 `--quant balanced` 生效）：
-
-- `tanh(W)+maxabs`：`--scale_mode maxabs --w_transform tanh`
-- `maxabs+bias(mean)`：`--scale_mode maxabs --w_bias_mode mean`（先量化 `W-mean(W)`，再把 mean 加回去）
-
-| Dataset | maxabs（Test acc） | tanh(W)+maxabs（Test acc） | maxabs+bias(mean)（Test acc） | meanabs2.5（Test acc） | 输出目录 |
-|---|---:|---:|---:|---:|---|
-| SVHN | 0.0670 | 0.1959 | 0.0670 | 0.9409 | maxabs=`sweeps/2026-02-21_balanced_w2a4_e1`<br>tanh=`sweeps/2026-02-22_balanced_w2a4_e1_maxabs_tanh`<br>bias=`sweeps/2026-02-22_balanced_w2a4_e1_maxabs_biasmean`<br>meanabs=`sweeps/2026-02-21_balanced_w2a4_e1_meanabs2.5` |
-| CIFAR-10 | 0.3862 | 0.0874 | 0.3412 | 0.4839 | maxabs=`sweeps/2026-02-22_cifar10_cnn_w2a4_e1_maxabs`<br>tanh=`sweeps/2026-02-22_cifar10_cnn_w2a4_e1_maxabs_tanh`<br>bias=`sweeps/2026-02-22_cifar10_cnn_w2a4_e1_maxabs_biasmean`<br>meanabs=`sweeps/2026-02-22_cifar10_cnn_w2a4_e1_meanabs2.5` |
-| CIFAR-100 | 0.0729 | 0.0947 | 0.0706 | 0.1323 | maxabs=`sweeps/2026-02-22_cifar100_cnn_w2a4_e1_maxabs`<br>tanh=`sweeps/2026-02-22_cifar100_cnn_w2a4_e1_maxabs_tanh`<br>bias=`sweeps/2026-02-22_cifar100_cnn_w2a4_e1_maxabs_biasmean`<br>meanabs=`sweeps/2026-02-22_cifar100_cnn_w2a4_e1_meanabs2.5` |
-
-### 10.4 ViT：Ablation（W2A4 meanabs2.5）
-
-#### 10.4.1 Dropout（SGD，10 epoch）
-
-统一：`--model vit --optimizer sgd --lr 1e-3 --vit_pool cls`，仅比较 `--vit_drop/--vit_attn_drop`
-
-| Dataset | Drop | Best Val acc | Test acc | 输出目录 |
+| 配置 | Best Val acc | Test acc | 训练耗时（sum epoch time） | 输出目录（本地 runs/，已 gitignore） |
 |---|---:|---:|---:|---|
-| SVHN | 0.0 | 0.8834 | 0.8324 | `sweeps/2026-02-21_vit_balanced_w2a4_e10_extra_meanabs2.5_lr1e-3_drop0.0` |
-| SVHN | 0.1 | 0.8228 | 0.7711 | `sweeps/2026-02-21_vit_balanced_w2a4_e10_extra_meanabs2.5_lr1e-3_drop0.1` |
-| CIFAR-10 | 0.0 | 0.4238 | 0.4178 | `sweeps/2026-02-22_cifar10_vit_sgd_drop0_w2a4_meanabs2.5_e10` |
-| CIFAR-10 | 0.1 | 0.3562 | 0.3596 | `sweeps/2026-02-22_cifar10_vit_sgd_drop0.1_w2a4_meanabs2.5_e10` |
-| CIFAR-100 | 0.0 | 0.1494 | 0.1386 | `sweeps/2026-02-22_cifar100_vit_sgd_drop0_w2a4_meanabs2.5_e10` |
-| CIFAR-100 | 0.1 | 0.1116 | 0.1068 | `sweeps/2026-02-22_cifar100_vit_sgd_drop0.1_w2a4_meanabs2.5_e10` |
+| fp32（`--quant none`） | 0.8364 | 0.8278 | ~20.9 min | `runs/lowbits_2026-02-22/vit_tune_cifar10_e100/adamw_lr5e-4_wd5e-2_drop0.1_p4_mean_e100_s42` |
+| W2A2（`maxabs`） | 0.8206 | 0.8107 | ~31.6 min | `runs/lowbits_2026-02-22/vit_tuned_lowbit_cifar10_e100/w2a2_maxabs_e100_s42` |
+| W1A2（`meanabs2.5` + `--fp32_last`） | 0.8152 | 0.8104 | ~31.3 min | `runs/lowbits_2026-02-22/vit_tuned_lowbit_cifar10_e100/w1a2_meanabs2.5_fp32last_e100_s42` |
 
-#### 10.4.2 patch-norm 的方向在 SVHN vs CIFAR 相反（AdamW，5 epoch）
-
-统一：`--model vit --optimizer adamw --lr 3e-4 --epochs 5 --weight_decay 0.05 --grad_clip 1.0 --vit_pool mean`，对比是否开启 `--vit_patch_norm`
-
-| Dataset | 配置 | Best Val acc | Test acc | 输出目录 |
-|---|---|---:|---:|---|
-| SVHN | full（含 patch-norm） | 0.9740 | 0.9513 | `sweeps/2026-02-21_vit_ablate_full_w2a4_meanabs2.5_adamw_e5` |
-| SVHN | no patch-norm | 0.9561 | 0.9313 | `sweeps/2026-02-21_vit_ablate_nopnorm_w2a4_meanabs2.5_adamw_e5` |
-| CIFAR-10 | full（含 patch-norm） | 0.4966 | 0.4802 | `sweeps/2026-02-22_cifar10_vit_ablate_full_w2a4_meanabs2.5_adamw_e5` |
-| CIFAR-10 | no patch-norm | 0.5082 | 0.4999 | `sweeps/2026-02-22_cifar10_vit_ablate_nopnorm_w2a4_meanabs2.5_adamw_e5` |
-| CIFAR-100 | full（含 patch-norm） | 0.1920 | 0.1910 | `sweeps/2026-02-22_cifar100_vit_ablate_full_w2a4_meanabs2.5_adamw_e5` |
-| CIFAR-100 | no patch-norm | 0.2168 | 0.2136 | `sweeps/2026-02-22_cifar100_vit_ablate_nopnorm_w2a4_meanabs2.5_adamw_e5` |
-
-#### 10.4.3 Optimizer ablation（patch-norm-only，10 epoch）
-
-为了尽量把变量收敛到 “优化器本身”，这里用最小设定：
-
-- `--vit_pool cls --vit_patch_norm`
-- `--weight_decay 0 --grad_clip 0`
-- AdamW lr=3e-4；SGD lr=1e-3；Muon lr=1e-3, momentum=0.95
-
-| Dataset | Optimizer | Best Val acc | Test acc | 输出目录 |
-|---|---|---:|---:|---|
-| SVHN | AdamW | 0.9798 | 0.9629 | `sweeps/2026-02-22_vit_verify_patchnorm_only_adamw_w2a4_meanabs2.5_e10_v2` |
-| SVHN | SGD | 0.8998 | 0.8549 | `sweeps/2026-02-22_vit_verify_patchnorm_only_sgd_w2a4_meanabs2.5_e10` |
-| SVHN | Muon（2D）+ AdamW（其余） | 0.9820 | 0.9664 | `sweeps/2026-02-22_vit_patchnorm_only_muon_w2a4_meanabs2.5_e10` |
-| CIFAR-10 | AdamW | 0.5596 | 0.5428 | `sweeps/2026-02-22_cifar10_vit_patchnorm_only_adamw_w2a4_meanabs2.5_e10` |
-| CIFAR-10 | SGD | 0.4150 | 0.4149 | `sweeps/2026-02-22_cifar10_vit_patchnorm_only_sgd_w2a4_meanabs2.5_e10` |
-| CIFAR-10 | Muon（2D）+ AdamW（其余） | 0.5982 | 0.5777 | `sweeps/2026-02-22_cifar10_vit_patchnorm_only_muon_w2a4_meanabs2.5_e10` |
-| CIFAR-100 | AdamW | 0.2824 | 0.2747 | `sweeps/2026-02-22_cifar100_vit_patchnorm_only_adamw_w2a4_meanabs2.5_e10` |
-| CIFAR-100 | SGD | 0.1300 | 0.1252 | `sweeps/2026-02-22_cifar100_vit_patchnorm_only_sgd_w2a4_meanabs2.5_e10` |
-| CIFAR-100 | Muon（2D）+ AdamW（其余） | 0.3024 | 0.2993 | `sweeps/2026-02-22_cifar100_vit_patchnorm_only_muon_w2a4_meanabs2.5_e10` |
-
-### 10.5 总结
-
-- **CNN（W2A4）**：`scale_mode=maxabs` 风险很高（SVHN 上会坍塌到接近随机），`meanabs2.5` 更稳且跨数据集更一致；`tanh(W)+maxabs` 与 `maxabs+bias(mean)` 在当前设定下都**不**是可靠替代（SVHN/CIFAR-10 上明显更差）。
-- **ViT（W2A4）**：在 SVHN 上 `maxabs` 也能正常训练，但 `meanabs2.5` 仍有小幅优势；CIFAR 上目前统一用 `meanabs2.5` 做对齐对照，尚未系统验证 ViT+`maxabs`。
-- ViT 在 ≤10 epoch 内的瓶颈主要不是 “多训一点/加 dropout”，而是优化器与 recipe：AdamW（或 Muon）明显强于 SGD；dropout(0.1) 在 SVHN/CIFAR-10/CIFAR-100 上都显著变差。
-- `--vit_patch_norm` 不是通用必开：SVHN 正向，但 CIFAR-10/100 反向（5 epoch 与 10 epoch 均复核）。
-- Muon 对超参（尤其 `lr`）更敏感：同 recipe 下需要单独调参；在本轮 `wd+clip+mean-pool` 设定里，Muon 用 `lr=1e-3` 在 SVHN / CIFAR-10 / CIFAR-100 都优于 AdamW，而 `lr=3e-4` 往往明显更差。
-- 这些 CIFAR 指标主要用于验证“相对结论”（≤10 epoch + 小 ViT + 低 bit），不代表 SOTA；若追求绝对精度需更久训练与更大模型/更强增强。
+注意：本仓库的量化实现是纯 PyTorch（没有 bitwise/fused kernel），因此低 bit 训练/推理 **不一定更快，甚至可能更慢**（上表就是一个例子）。如果目标是速度，需要另外做算子融合/专用 kernel（不在本项目范围）。

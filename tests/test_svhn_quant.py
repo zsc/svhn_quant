@@ -69,6 +69,23 @@ def test_balanced_quantize_weight_discrete_and_backward() -> None:
     assert w.grad.shape == w.shape
 
 
+def test_balanced_quantize_weight_1bit_discrete_and_backward() -> None:
+    torch.manual_seed(0)
+    w = torch.randn(128, 128, requires_grad=True)
+    wq = balanced_quantize_weight(w, 1, scale_mode="maxabs", equalize_mode="recursive_mean", ste=True)
+
+    scale = w.detach().abs().max().clamp_min(1e-8)
+    assert float(wq.abs().max().item()) <= float(scale.item()) + 1e-4
+
+    uniq = torch.unique(wq.detach().cpu())
+    assert uniq.numel() <= 2
+
+    loss = wq.pow(2).mean()
+    loss.backward()
+    assert w.grad is not None
+    assert w.grad.shape == w.shape
+
+
 def test_quantize_w_bitutils_discrete_and_backward() -> None:
     torch.manual_seed(0)
     w = torch.randn(256, 256, requires_grad=True)

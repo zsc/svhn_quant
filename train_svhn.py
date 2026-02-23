@@ -264,8 +264,8 @@ def main() -> None:
 
     # Quantization toggles
     parser.add_argument("--quant", type=str, choices=["none", "balanced", "uniform"], default="none")
-    parser.add_argument("--w_bits", type=int, choices=[2, 3, 4, 8, 32], default=32)
-    parser.add_argument("--a_bits", type=int, choices=[2, 3, 4, 8, 32], default=32)
+    parser.add_argument("--w_bits", type=int, choices=[1, 2, 3, 4, 8, 32], default=32)
+    parser.add_argument("--a_bits", type=int, choices=[1, 2, 3, 4, 8, 32], default=32)
     parser.add_argument("--equalize", type=str, choices=["recursive_mean"], default="recursive_mean")
     parser.add_argument("--scale_mode", type=str, choices=["maxabs", "meanabs2.5"], default="maxabs")
     parser.add_argument(
@@ -282,7 +282,9 @@ def main() -> None:
         default="none",
         help="Balanced quantization weight bias/zero-point: quantize W-mean(W) then add mean(W) back",
     )
-    parser.add_argument("--fp32_first_last", action="store_true")
+    parser.add_argument("--fp32_first_last", action="store_true", help="Keep first conv/patch and last head in fp32")
+    parser.add_argument("--fp32_first", action="store_true", help="Keep first conv/patch in fp32")
+    parser.add_argument("--fp32_last", action="store_true", help="Keep last head in fp32")
 
     # ViT arch (used when --model vit)
     parser.add_argument("--vit_patch", type=int, default=8)
@@ -308,6 +310,42 @@ def main() -> None:
     # I/O
     parser.add_argument("--output_dir", type=str, default="checkpoints")
     parser.add_argument("--resume", type=str, default="", help="Path to checkpoint to resume from")
+    parser.add_argument(
+        "--save_optimizer",
+        action="store_true",
+        default=True,
+        help="Save optimizer state into checkpoints (default: enabled; can be large)",
+    )
+    parser.add_argument(
+        "--no_save_optimizer",
+        action="store_false",
+        dest="save_optimizer",
+        help="Do not save optimizer state (smaller checkpoints; resume will not restore optimizer)",
+    )
+    parser.add_argument(
+        "--save_last",
+        action="store_true",
+        default=True,
+        help="Save last.pt each epoch (default: enabled)",
+    )
+    parser.add_argument(
+        "--no_save_last",
+        action="store_false",
+        dest="save_last",
+        help="Do not save last.pt (reduce disk usage during sweeps)",
+    )
+    parser.add_argument(
+        "--save_best",
+        action="store_true",
+        default=True,
+        help="Save best.pt when val improves (default: enabled)",
+    )
+    parser.add_argument(
+        "--no_save_best",
+        action="store_false",
+        dest="save_best",
+        help="Do not save best.pt (metrics-only sweeps; reduces disk usage)",
+    )
     parser.add_argument("--no_tqdm", action="store_true", help="Disable tqdm progress bars (useful for sweeps/logging)")
 
     args = parser.parse_args()
@@ -340,6 +378,8 @@ def main() -> None:
         w_transform=str(args.w_transform),
         w_bias_mode=str(args.w_bias_mode),
         fp32_first_last=bool(args.fp32_first_last),
+        fp32_first=bool(args.fp32_first),
+        fp32_last=bool(args.fp32_last),
     )
     num_classes = 10 if args.dataset in {"svhn", "cifar10"} else 100
     if args.model == "cnn":
@@ -550,32 +590,31 @@ def main() -> None:
             if is_best:
                 best_val_acc = float(val_m["acc"])
 
-            if is_best:
+            if is_best and bool(args.save_best):
                 best_path = os.path.join(args.output_dir, "best.pt")
-                save_checkpoint(
-                    {
-                        "epoch": epoch + 1,
-                        "model": model.state_dict(),
-                        "optimizer": [opt.state_dict() for opt in optimizers],
-                        "best_val_acc": best_val_acc,
-                        "args": vars(args),
-                        "config": asdict(cfg),
-                    },
-                    best_path,
-                )
-
-            last_path = os.path.join(args.output_dir, "last.pt")
-            save_checkpoint(
-                {
+                state: dict[str, Any] = {
                     "epoch": epoch + 1,
                     "model": model.state_dict(),
-                    "optimizer": [opt.state_dict() for opt in optimizers],
                     "best_val_acc": best_val_acc,
                     "args": vars(args),
                     "config": asdict(cfg),
-                },
-                last_path,
-            )
+                }
+                if bool(args.save_optimizer):
+                    state["optimizer"] = [opt.state_dict() for opt in optimizers]
+                save_checkpoint(state, best_path)
+
+            if bool(args.save_last):
+                last_path = os.path.join(args.output_dir, "last.pt")
+                state = {
+                    "epoch": epoch + 1,
+                    "model": model.state_dict(),
+                    "best_val_acc": best_val_acc,
+                    "args": vars(args),
+                    "config": asdict(cfg),
+                }
+                if bool(args.save_optimizer):
+                    state["optimizer"] = [opt.state_dict() for opt in optimizers]
+                save_checkpoint(state, last_path)
 
     # Final test with best checkpoint.
     best_path = os.path.join(args.output_dir, "best.pt")
